@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping
-from typing import Annotated, Protocol
+from typing import Annotated, Literal, Protocol
 
 from pydantic import Field
 
@@ -31,6 +31,7 @@ class ScanLimits(DomainModel):
     max_evidence_count: Annotated[int, Field(gt=0)]
     max_wall_time_seconds: Annotated[int, Field(gt=0)]
     max_memory_bytes: Annotated[int, Field(gt=0)]
+    max_file_bytes: Annotated[int, Field(gt=0)] = 64 * 1024 * 1024
 
 
 class ScanRequest(DomainModel):
@@ -53,6 +54,23 @@ class RawObservation(DomainModel):
     confidence: Confidence
 
 
+class SourceObservation(RawObservation):
+    """Bounded source-analysis output; this is evidence, not a finding schema."""
+
+    language: Literal["python", "c", "cpp"]
+    detector_type: Literal["python_ast", "python_lexical", "cpp_lexical", "gcc_syntax_gate"]
+    rule_id: Annotated[str, Field(min_length=1, max_length=128)]
+    source_file_digest: Sha256Digest
+
+
+class BinaryObservation(RawObservation):
+    """Bounded binary-analysis output from a local executable image."""
+
+    format: Literal["elf", "pe", "mach_o"]
+    detector_type: Literal["symbol", "import", "export", "entropy"]
+    binary_digest: Sha256Digest
+
+
 class ScannerPlugin(Protocol):
     name: str
     version: ScannerVersion
@@ -60,3 +78,17 @@ class ScannerPlugin(Protocol):
 
     def scan(self, request: ScanRequest) -> AsyncIterator[RawObservation]:
         """Stream bounded observations; never execute or trust target contents."""
+
+
+class SourceScanner(ScannerPlugin, Protocol):
+    name: Literal["qrypton-source"]
+
+    def scan(self, request: ScanRequest) -> AsyncIterator[SourceObservation]:
+        """Stream read-only source observations from a local source-tree target."""
+
+
+class BinaryScanner(ScannerPlugin, Protocol):
+    name: Literal["qrypton-binary"]
+
+    def scan(self, request: ScanRequest) -> AsyncIterator[BinaryObservation]:
+        """Stream read-only observations from one local executable image."""

@@ -10,7 +10,10 @@ readme = "README.md"
 requires-python = ">=3.11,<3.14"
 license = { text = "Proprietary" }
 authors = [{ name = "QRYPTON" }]
-dependencies = ["pydantic>=2.10,<3"]
+dependencies = [
+  "pathspec>=0.12,<1",
+  "pydantic>=2.10,<3",
+]
 
 [dependency-groups]
 dev = [

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Protocol
 
+from qrypton.contracts.ids import IdDeriver
 from qrypton.contracts.models import Asset, CryptoFinding, Evidence, Provenance, ScanTarget
 from qrypton.contracts.primitives import ScannerVersion
 from qrypton.ports.scanners import RawObservation
@@ -15,7 +16,13 @@ class EvidenceNormalizer(Protocol):
     version: ScannerVersion
 
     def normalize(
-        self, raw: RawObservation, *, target: ScanTarget, provenance: Provenance
+        self,
+        raw: RawObservation,
+        *,
+        asset: Asset,
+        target: ScanTarget,
+        provenance: Provenance,
+        id_deriver: IdDeriver,
     ) -> Evidence:
         """Convert one raw observation to canonical, deduplicable evidence."""
 
@@ -25,6 +32,12 @@ class FindingNormalizer(Protocol):
     version: ScannerVersion
 
     def derive_findings(
-        self, evidence: Sequence[Evidence], *, asset: Asset
+        self,
+        evidence: Sequence[Evidence],
+        *,
+        asset: Asset,
+        target: ScanTarget,
+        provenance: Provenance,
+        id_deriver: IdDeriver,
     ) -> Sequence[CryptoFinding]:
         """Derive findings without mutating or discarding conflicting evidence."""

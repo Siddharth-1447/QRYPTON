@@ -35,6 +35,7 @@ class ScanTargetKind(StrEnum):
 
 class EvidenceKind(StrEnum):
     SOURCE_AST = "source_ast"
+    SOURCE_LEXICAL = "source_lexical"
     BINARY_SYMBOL = "binary_symbol"
     BINARY_STRING = "binary_string"
     BINARY_IMPORT = "binary_import"
