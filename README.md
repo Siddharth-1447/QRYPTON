@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # QRYPTON
 
 QRYPTON is an enterprise cryptographic discovery and quantum-risk assessment engine.
@@ -19,3 +20,6 @@ merging. No network access is required at runtime.
 - Deterministic identifiers are tenant-scoped HMAC-SHA-256 values.
 - Observation state differentiates uninspected, indeterminate, and proven-absent data.
 - Raw repositories, binaries, archives, and images are not represented in model payloads.
+=======
+# QRYPTON
+>>>>>>> 9837870 (Initial commit)
