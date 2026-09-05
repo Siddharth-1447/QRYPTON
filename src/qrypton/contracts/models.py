@@ -275,6 +275,19 @@ class RiskAssessment(DomainModel):
     evidence_ids: tuple[EntityId, ...]
 
 
+class PersistedMoscaEvaluation(DomainModel):
+    """Structured Mosca timelines persisted with a run; not reconstructed from rationale text."""
+
+    finding_id: EntityId
+    x_data_lifetime_years: Annotated[float, Field(ge=0.0, le=10_000.0)]
+    y_migration_years: Annotated[float, Field(ge=0.0, le=10_000.0)]
+    z_crqc_horizon_years: Annotated[float, Field(ge=0.0, le=10_000.0)]
+    required_security_years: Annotated[float, Field(ge=0.0, le=10_000.0)]
+    time_margin_years: Annotated[float, Field(ge=-10_000.0, le=10_000.0)]
+    exposure_score: Annotated[float, Field(ge=0.0, le=100.0)]
+    urgency: Literal["critical", "high", "medium", "low"]
+
+
 class Recommendation(DomainModel):
     id: EntityId
     tenant_id: TenantId

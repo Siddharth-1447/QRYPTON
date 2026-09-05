@@ -3,7 +3,8 @@ from __future__ import annotations
 import pytest
 
 from qrypton.contracts.enums import AlgorithmFamily
-from qrypton.risk.mosca import MoscaParameters, MoscaRiskCalculator
+from qrypton.contracts.ids import HmacIdDeriver
+from qrypton.risk.mosca import MoscaParameters, MoscaRiskCalculator, MoscaRiskEngine
 from tests.risk.conftest import finding
 
 
@@ -65,3 +66,19 @@ def test_mosca_rejects_invalid_values() -> None:
         MoscaParameters(
             data_shelf_life_years=-1, migration_time_years=1, quantum_threat_horizon_years=2
         )
+
+
+def test_persistable_evaluation_copies_calculator_output() -> None:
+    parameters = MoscaParameters(
+        data_shelf_life_years=5, migration_time_years=2, quantum_threat_horizon_years=10
+    )
+    calculated = MoscaRiskCalculator.evaluate(parameters)
+    engine = MoscaRiskEngine(parameters=parameters, id_deriver=HmacIdDeriver(b"a" * 32))
+    stored = engine.persistable_evaluation(finding("rsa", AlgorithmFamily.ASYMMETRIC_ENCRYPTION))
+    assert stored.x_data_lifetime_years == parameters.data_shelf_life_years
+    assert stored.y_migration_years == parameters.migration_time_years
+    assert stored.z_crqc_horizon_years == parameters.quantum_threat_horizon_years
+    assert stored.required_security_years == calculated.required_security_years
+    assert stored.time_margin_years == calculated.time_margin_years
+    assert stored.exposure_score == calculated.exposure_score
+    assert stored.urgency == calculated.urgency

@@ -1,5 +1,6 @@
 """Immutable, validated domain contracts."""
 
+from qrypton.contracts.enums import RunStatus
 from qrypton.contracts.ids import HmacIdDeriver, canonical_json_bytes
 from qrypton.contracts.models import (
     Algorithm,
@@ -12,6 +13,7 @@ from qrypton.contracts.models import (
     KeyMaterialMetadata,
     LibraryMetadata,
     Observation,
+    PersistedMoscaEvaluation,
     ProtocolMetadata,
     Recommendation,
     RiskAssessment,
@@ -32,11 +34,13 @@ __all__ = [
     "KeyMaterialMetadata",
     "LibraryMetadata",
     "Observation",
+    "PersistedMoscaEvaluation",
     "ProtocolMetadata",
     "Recommendation",
     "RiskAssessment",
     "RiskFactors",
     "ScanResult",
     "ScanTarget",
+    "RunStatus",
     "canonical_json_bytes",
 ]

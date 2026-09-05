@@ -107,3 +107,17 @@ class RecommendationKind(StrEnum):
     MIGRATION = "migration"
     COMPENSATING_CONTROL = "compensating_control"
     VALIDATION = "validation"
+
+
+class RunStatus(StrEnum):
+    PENDING = "pending"
+    SCANNING = "scanning"
+    NORMALIZING = "normalizing"
+    CORRELATING = "correlating"
+    ASSESSING = "assessing"
+    RECOMMENDING = "recommending"
+    EXPORTING = "exporting"
+    PERSISTING = "persisting"
+    COMPLETED = "completed"
+    PARTIAL = "partial"
+    FAILED = "failed"

@@ -15,6 +15,7 @@ from qrypton.contracts.models import (
     CryptoFinding,
     DomainModel,
     Observation,
+    PersistedMoscaEvaluation,
     RiskAssessment,
     RiskFactors,
 )
@@ -180,4 +181,18 @@ class MoscaRiskEngine:
             engine_name=self.name,
             engine_version=self.version,
             evidence_ids=finding.evidence_ids,
+        )
+
+    def persistable_evaluation(self, finding: CryptoFinding) -> PersistedMoscaEvaluation:
+        """Copy calculator output into the structured run-persistence record."""
+        evaluation = self.calculator.evaluate_finding(finding, self.parameters)
+        return PersistedMoscaEvaluation(
+            finding_id=finding.id,
+            x_data_lifetime_years=self.parameters.data_shelf_life_years,
+            y_migration_years=self.parameters.migration_time_years,
+            z_crqc_horizon_years=self.parameters.quantum_threat_horizon_years,
+            required_security_years=evaluation.required_security_years,
+            time_margin_years=evaluation.time_margin_years,
+            exposure_score=evaluation.exposure_score,
+            urgency=evaluation.urgency,
         )

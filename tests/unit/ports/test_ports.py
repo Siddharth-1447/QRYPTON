@@ -20,6 +20,11 @@ def test_application_container_has_only_port_dependencies() -> None:
         "risk_engine",
         "recommendation_engine",
         "cbom_exporter",
+        "correlation_engine",
+        "store",
+        "id_deriver",
+        "clock",
+        "logger",
     }
     ports = (
         CBOMExporter,

@@ -19,6 +19,7 @@ from qrypton.contracts.models import (
     Evidence,
     EvidenceLocation,
     Observation,
+    PersistedMoscaEvaluation,
     RiskAssessment,
     RiskFactors,
     ScanResult,
@@ -188,3 +189,21 @@ def test_missing_business_context_is_represented_without_fabricating_a_score() -
     )
     assert assessment.business_context_id is None
     assert assessment.score.state is ObservationState.UNKNOWN
+
+
+def test_persisted_mosca_evaluation_is_structured_and_immutable() -> None:
+    record = PersistedMoscaEvaluation(
+        finding_id=entity_id("finding"),
+        x_data_lifetime_years=5.0,
+        y_migration_years=2.0,
+        z_crqc_horizon_years=10.0,
+        required_security_years=7.0,
+        time_margin_years=3.0,
+        exposure_score=70.0,
+        urgency="medium",
+    )
+    dumped = record.model_dump()
+    restored = PersistedMoscaEvaluation.model_validate(dumped)
+    assert restored.required_security_years == 7.0
+    with pytest.raises(ValidationError):
+        record.exposure_score = 1.0  # type: ignore[misc]
