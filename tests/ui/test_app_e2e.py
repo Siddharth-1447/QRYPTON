@@ -14,13 +14,39 @@ from streamlit.testing.v1 import AppTest  # noqa: E402
 APP_PATH = str(Path(__file__).resolve().parents[2] / "src" / "qrypton" / "ui" / "app.py")
 
 
-def test_streamlit_app_empty_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_streamlit_app_empty_db_falls_back_to_mock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     db_path = tmp_path / "empty.sqlite3"
     SqliteRunStore(db_path)
     monkeypatch.setenv("QRYPTON_DB", str(db_path))
     app = AppTest.from_file(APP_PATH, default_timeout=15).run()
     assert not app.exception
-    assert any("No runs found" in str(item.value) for item in app.warning)
+    assert "QRYPTON Enterprise Cryptographic Dashboard" in app.title[0].value
+    assert len(app.metric) >= 4
+
+
+def test_streamlit_app_missing_db_falls_back_to_mock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    missing_path = tmp_path / "nonexistent.sqlite3"
+    monkeypatch.setenv("QRYPTON_DB", str(missing_path))
+    app = AppTest.from_file(APP_PATH, default_timeout=15).run()
+    assert not app.exception
+    assert "QRYPTON Enterprise Cryptographic Dashboard" in app.title[0].value
+    assert len(app.metric) >= 4
+
+
+def test_streamlit_app_corrupted_db_falls_back_to_mock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    corrupted = tmp_path / "corrupted.sqlite3"
+    corrupted.write_text("NOT A SQLITE FILE")
+    monkeypatch.setenv("QRYPTON_DB", str(corrupted))
+    app = AppTest.from_file(APP_PATH, default_timeout=15).run()
+    assert not app.exception
+    assert "QRYPTON Enterprise Cryptographic Dashboard" in app.title[0].value
+    assert len(app.metric) >= 4
 
 
 def test_streamlit_app_renders_with_populated_run(

@@ -8,7 +8,8 @@ from pathlib import Path
 
 import streamlit as st
 
-from qrypton.ui.errors import ERR_STORAGE_CONNECT, ERR_VIEW_LOAD_FAILED
+from qrypton.ui.errors import ERR_VIEW_LOAD_FAILED
+from qrypton.ui.mock_provider import MockDashboardDataProvider
 from qrypton.ui.provider import DashboardDataProvider
 from qrypton.ui.sqlite_provider import SqliteDashboardDataProvider
 from qrypton.ui.views.cbom import render_cbom_view
@@ -26,23 +27,46 @@ st.set_page_config(
 )
 
 
-def get_provider() -> DashboardDataProvider:
-    """Composition root: bind the read-only SQLite provider from QRYPTON_DB."""
-    return SqliteDashboardDataProvider(Path(os.environ.get("QRYPTON_DB", "qrypton.sqlite3")))
+def get_provider(tenant_id: str | None = None) -> DashboardDataProvider:
+    """Composition root: bind SQLite provider if database has runs, otherwise fallback to Mock."""
+    candidates: list[Path] = []
+    env_db = os.environ.get("QRYPTON_DB")
+    if env_db:
+        candidates.append(Path(env_db))
+    candidates.extend([Path("qrypton.db"), Path("qrypton.sqlite3"), Path("qrypton_demo.db")])
+
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_file():
+            try:
+                sqlite_provider = SqliteDashboardDataProvider(candidate)
+                runs = sqlite_provider.list_runs(tenant_id=tenant_id)
+                if runs:
+                    return sqlite_provider
+            except Exception:
+                continue
+
+    return MockDashboardDataProvider()
 
 
 def main() -> None:
     st.title("QRYPTON Enterprise Cryptographic Dashboard")
-    provider = get_provider()
+    tenant_scope = os.environ.get("QRYPTON_TENANT_ID") or None
+    provider = get_provider(tenant_id=tenant_scope)
     st.sidebar.title("Scope")
     st.sidebar.caption("Read-only presentation")
-    tenant_scope = os.environ.get("QRYPTON_TENANT_ID") or None
+    if isinstance(provider, MockDashboardDataProvider):
+        st.sidebar.info("Demo Mode: Displaying sample cryptographic posture data.")
+
     try:
         available_runs = provider.list_runs(tenant_id=tenant_scope)
     except Exception:
-        request_id = str(uuid.uuid4())
-        st.error(f"Safe error [{ERR_STORAGE_CONNECT}]: request {request_id}")
-        return
+        provider = MockDashboardDataProvider()
+        available_runs = provider.list_runs(tenant_id=tenant_scope)
+
+    if not available_runs and not isinstance(provider, MockDashboardDataProvider):
+        provider = MockDashboardDataProvider()
+        available_runs = provider.list_runs(tenant_id=tenant_scope)
+
     if not available_runs:
         st.warning("No runs found in persisted storage.")
         return
