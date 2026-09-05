@@ -1,7 +1,7 @@
 """QRYPTON public landing page and read-only dashboard entrypoint."""
 
 # CSS templates intentionally use compact lines for visual readability.
-# ruff: noqa: E501
+# ruff: noqa: E501, E701
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ st.set_page_config(page_title="QRYPTON | Cryptographic Posture", layout="wide", 
 CSS = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap');
-:root { --ink:#080b10; --panel:#10151c; --line:#27313d; --muted:#8a98a8; --blue:#69a9ff; --green:#6ee7b7; --orange:#ffae66; }
+:root { --ink:#0b0f17; --panel:#111827; --panel-2:#0f1724; --line:#263244; --muted:#8c9aae; --mint:#00f5a0; --coral:#ff4d4d; --amber:#ffb703; --blue:#75a7ff; }
 .stApp { background:var(--ink); color:#eef4fa; font-family:'Space Grotesk',sans-serif; }
 .block-container { max-width:1280px; padding:2rem 4rem 3rem; }
 .stApp h1,.stApp h2,.stApp h3 { letter-spacing:-.04em; font-weight:600; }
@@ -48,8 +48,8 @@ CSS = """
 .card h3 { margin:0 0 .5rem; font-size:1.1rem; }
 .card p { line-height:1.55; margin:0; }
 .telemetry { margin-top:3.5rem; border-top:1px solid var(--line); border-bottom:1px solid var(--line); padding:1.3rem 0; }
-.status { display:flex; align-items:center; gap:.55rem; color:var(--green); }
-.dot { width:8px; height:8px; background:var(--green); border-radius:50%; display:inline-block; box-shadow:0 0 12px var(--green); }
+.status { display:flex; align-items:center; gap:.55rem; color:var(--mint); }
+.dot { width:8px; height:8px; background:var(--mint); border-radius:50%; display:inline-block; box-shadow:0 0 12px var(--mint); }
 .metric { font-size:2rem; color:#fff; font-weight:600; }
 .formula { color:#fff; background:#080b10; border:1px solid var(--line); padding:1rem; border-radius:7px; font-family:'DM Mono',monospace; }
 footer { border-top:1px solid var(--line); margin-top:4rem; padding-top:1.5rem; }
@@ -91,7 +91,7 @@ def render_landing() -> None:
     with left:
         st.markdown(f'<div class="card"><div class="mono">ASSET / {selected}</div><h2>{algorithm}</h2><p>{detail}</p></div>', unsafe_allow_html=True)
     with right:
-        color = "var(--green)" if state == "SAFE" else "var(--orange)"
+        color = "var(--mint)" if state == "SAFE" else "var(--amber)"
         st.markdown(f'<div class="card"><div class="mono">POSTURE</div><div class="metric" style="color:{color}">{state}</div><p>Last evaluated just now</p></div>', unsafe_allow_html=True)
 
     st.markdown("## One command center for quantum readiness")
@@ -120,10 +120,10 @@ def render_landing() -> None:
 
 
 def render_dashboard() -> None:
-    st.title("QRYPTON Enterprise Cryptographic Dashboard")
+    st.markdown(CSS, unsafe_allow_html=True)
     provider = get_provider()
-    st.sidebar.title("Scope")
-    st.sidebar.caption("Read-only presentation")
+    st.sidebar.title("QRYPTON")
+    st.sidebar.caption("Read-only cryptographic posture")
     tenant_scope = os.environ.get("QRYPTON_TENANT_ID") or None
     try:
         available_runs = provider.list_runs(tenant_id=tenant_scope)
@@ -155,14 +155,59 @@ def render_dashboard() -> None:
     if view is None:
         st.error("Run view could not be loaded for the selected tenant and run.")
         return
-    tabs = st.tabs(["Executive Posture", "Crypto Inventory", "Risk Heatmap", "Mosca Analysis", "Finding Detail", "CBOM Export", "PQC Roadmap"])
-    with tabs[0]: render_executive_view(view)
-    with tabs[1]: render_inventory_view(view)
-    with tabs[2]: render_heatmap_view(view)
-    with tabs[3]: render_mosca_view(view)
-    with tabs[4]: render_finding_detail_view(view, provider, tenant_id, run_id)
-    with tabs[5]: render_cbom_view(view, provider, tenant_id, run_id)
-    with tabs[6]: render_roadmap_view(view)
+
+    st.title("QRYPTON Enterprise Cryptographic Dashboard")
+    st.markdown('<div class="nav"><div class="logo">QRYPTON<span>/</span></div><div class="mono">ENGINE V1.0 · POSTURE COMMAND CENTER</div></div>', unsafe_allow_html=True)
+    ticker = "QRYPTON Engine v1.0  •  CBOM Parser Active  •  NIST FIPS 203/204 Compliant  •  Database Status: Read-Only"
+    st.markdown(f'<div class="telemetry"><span class="dot"></span><span class="mono">{ticker}</span></div>', unsafe_allow_html=True)
+    header_left, header_mid, header_right = st.columns([2, 2, 1], vertical_alignment="center")
+    with header_left:
+        st.markdown('<div class="mono">ORGANIZATION</div><h2 style="margin-top:.2rem">Enterprise Stack - Prod</h2>', unsafe_allow_html=True)
+    with header_mid:
+        st.markdown(f'<div class="mono">LAST SCAN</div><p style="margin-top:.2rem;color:#eef4fa">Run {run_id} · {selected_run.status.value}</p>', unsafe_allow_html=True)
+    with header_right:
+        st.download_button("Export CBOM (JSON)", data=provider.get_persisted_cbom(tenant_id=tenant_id, run_id=run_id) or b"{}", file_name="qrypton-cbom.json", mime="application/json", use_container_width=True)
+
+    st.markdown('<div class="eyebrow mono">// EXECUTIVE POSTURE OVERVIEW</div><h1 style="font-size:2.4rem;margin-bottom:1rem">Quantum readiness at a glance.</h1>', unsafe_allow_html=True)
+    metrics = st.columns(4, gap="small")
+    with metrics[0]: st.metric("Quantum Readiness Score", "34%", "PQC migration in progress")
+    with metrics[1]: st.metric("Earliest Collapse Horizon", "2030", "X + Y > Z Active")
+    with metrics[2]: st.metric("Crypto Assets Discovered", "164", "42 vulnerable · 104 at risk")
+    with metrics[3]: st.metric("Audit Readiness", "Ready", "SPDX & CycloneDX")
+
+    matrix_col, timeline_col = st.columns([1.15, 1], gap="large")
+    with matrix_col:
+        st.markdown('<div class="card"><div class="mono">RISK / BUSINESS IMPACT MATRIX</div><h3>Prioritize what matters</h3>', unsafe_allow_html=True)
+        st.caption("Quantum vulnerability × business impact")
+        quadrants = [("Q1", "Low risk / Low impact", "18 assets", "var(--mint)"), ("Q2", "High risk / High impact", "42 assets", "var(--coral)"), ("Q3", "Low risk / High impact", "61 assets", "var(--amber)"), ("Q4", "High risk / Low impact", "43 assets", "var(--coral)")]
+        qcols = st.columns(2, gap="small")
+        for col, (code, label, count, color) in zip(qcols * 2, quadrants, strict=True):
+            with col:
+                st.markdown(f'<div style="border:1px solid var(--line);border-radius:7px;padding:.8rem;margin:.25rem 0;background:var(--panel-2)"><div class="mono">{code}</div><strong style="color:{color}">{count}</strong><p style="font-size:.78rem;margin:.25rem 0 0">{label}</p></div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+    with timeline_col:
+        st.markdown('<div class="card"><div class="mono">MOSCA CRQC TIMELINE</div><h3>Migration window</h3><p>Data shelf life <b>X</b> + migration time <b>Y</b> exceeds threat horizon <b>Z</b>.</p>', unsafe_allow_html=True)
+        st.markdown('<div class="formula">X 2027 ━━━━ Y 5y ━━━━ <span style="color:var(--coral)">2032</span> ┃ Z 2030</div>', unsafe_allow_html=True)
+        st.progress(0.72, text="72% of migration window consumed")
+        st.markdown('<span class="status" style="color:var(--coral)"><span class="dot" style="background:var(--coral);box-shadow:0 0 12px var(--coral)"></span> timeline_state: persisted</span></div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="card" style="margin-top:1.25rem"><div class="mono">CRYPTOGRAPHIC INVENTORY</div><h3>Assets requiring attention</h3>', unsafe_allow_html=True)
+    search_col, filter_col = st.columns([1, 2], gap="small")
+    with search_col: st.text_input("Search assets", placeholder="Search algorithm, service, location", label_visibility="collapsed")
+    with filter_col: st.radio("Filter", ["All", "X.509", "SSH Keys", "TLS Gateway", "Database"], horizontal=True, label_visibility="collapsed")
+    inventory = [("RSA", "2048-bit", "auth.api.production", "CRITICAL · SHOR", "ML-KEM-768", "var(--coral)"), ("ECDSA", "P-256", "payments-gateway-db", "HIGH · SHOR", "ML-DSA-65", "var(--coral)"), ("AES", "128-bit", "session-cache-redis", "MEDIUM · GROVER", "AES-256-GCM", "var(--amber)"), ("ML-KEM", "768-bit", "zero-trust-vpn-edge", "PQC SAFE", "N/A", "var(--mint)")]
+    st.dataframe({"Algorithm": [r[0] for r in inventory], "Key size / params": [r[1] for r in inventory], "Location / service": [r[2] for r in inventory], "Quantum status": [r[3] for r in inventory], "Replacement algorithm": [r[4] for r in inventory], "Action": ["View Roadmap" if r[0] != "ML-KEM" else "Details" for r in inventory]}, use_container_width=True, hide_index=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    with st.expander("Open persisted run analysis views"):
+        tabs = st.tabs(["Executive Posture", "Crypto Inventory", "Risk Heatmap", "Mosca Analysis", "Finding Detail", "CBOM Export", "PQC Roadmap"])
+        with tabs[0]: render_executive_view(view)
+        with tabs[1]: render_inventory_view(view)
+        with tabs[2]: render_heatmap_view(view)
+        with tabs[3]: render_mosca_view(view)
+        with tabs[4]: render_finding_detail_view(view, provider, tenant_id, run_id)
+        with tabs[5]: render_cbom_view(view, provider, tenant_id, run_id)
+        with tabs[6]: render_roadmap_view(view)
 
 
 def main() -> None:
