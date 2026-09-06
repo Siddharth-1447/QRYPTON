@@ -9,3 +9,4 @@ env/
 *.dll
 *.exe
 .DS_Store
+qrypton.db*
