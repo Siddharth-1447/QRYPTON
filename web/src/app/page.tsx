@@ -25,6 +25,8 @@ import {
   Filter,
   Moon,
   Sun,
+  RefreshCw,
+  Sparkles,
 } from "lucide-react";
 
 // --- API Domain Types ---
