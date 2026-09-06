@@ -4,6 +4,7 @@ import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { AuthFlow } from "@/components/auth-flow";
 import { ScanWorkflow } from "@/components/scan-workflow";
 import { CryptoInventory } from "@/components/crypto-inventory";
+import { FindingDetail } from "@/components/finding-detail";
 import {
   Shield,
   ShieldAlert,
@@ -17,12 +18,9 @@ import {
   Layers,
   Sparkles,
   RefreshCw,
-  Code2,
   ChevronRight,
   Lock,
   X,
-  Copy,
-  Check,
   Filter,
 } from "lucide-react";
 
@@ -171,14 +169,12 @@ export default function QryptonCommandCenter() {
   } | null>(null);
 
   const [findingDetail, setFindingDetail] = useState<FindingDetail | null>(null);
-  const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState<boolean>(false);
   const [isDrawerOpen, setIsDrawerOpen] = useState<boolean>(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   // --- Scan Modal State ---
   const [isScanModalOpen, setIsScanModalOpen] = useState<boolean>(false);
-  const [scanStep, setScanStep] = useState<number>(1);
   const [scanSubmitting, setScanSubmitting] = useState<boolean>(false);
   const [scanSuccessMessage, setScanSuccessMessage] = useState<string | null>(null);
 
@@ -295,7 +291,6 @@ export default function QryptonCommandCenter() {
 
   // --- Fetch Single Finding Detail ---
   const openFindingDrawer = async (findingId: string) => {
-    setSelectedFindingId(findingId);
     setIsDrawerOpen(true);
     setDetailLoading(true);
     setFindingDetail(null);
@@ -354,8 +349,7 @@ export default function QryptonCommandCenter() {
       setTimeout(() => {
         setIsScanModalOpen(false);
         setScanSuccessMessage(null);
-        setScanStep(1);
-        loadData(true);
+              loadData(true);
       }, 1200);
     } catch (err: unknown) {
       alert(err instanceof Error ? err.message : "Failed to trigger scan");
@@ -521,8 +515,7 @@ export default function QryptonCommandCenter() {
 
             <button
               onClick={() => {
-                setScanStep(1);
-                setIsScanModalOpen(true);
+                              setIsScanModalOpen(true);
               }}
               className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-500 via-blue-600 to-indigo-600 hover:from-cyan-400 hover:to-indigo-500 text-white font-medium text-xs tracking-wide shadow-lg shadow-cyan-500/25 hover:shadow-cyan-500/40 border border-white/10 active:scale-95 transition-all"
             >
@@ -574,7 +567,7 @@ export default function QryptonCommandCenter() {
           </div>
           <div className="mt-4 flex flex-col gap-3 rounded-md border border-border bg-muted/40 p-4 sm:flex-row sm:items-center sm:justify-between">
             <div><p className="text-sm font-medium">{posture?.run_status?.toLowerCase().includes("run") ? "A scan is currently evaluating your cryptographic estate." : posture?.total_findings ? "Latest scan completed with actionable findings." : "No completed scan data is available yet."}</p><p className="mt-1 text-xs leading-5 text-muted-foreground">{posture?.scanner_failed_count ? `${posture.scanner_failed_count} scanner failed. Review coverage before relying on this posture.` : "Coverage and findings are reflected in the command center below."}</p></div>
-            <button onClick={() => { setScanStep(1); setIsScanModalOpen(true); }} className="inline-flex min-h-9 shrink-0 items-center justify-center rounded-md bg-primary px-3 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90">Run new scan</button>
+            <button onClick={() => setIsScanModalOpen(true)} className="inline-flex min-h-9 shrink-0 items-center justify-center rounded-md bg-primary px-3 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90">Run new scan</button>
           </div>
         </section>
 
@@ -1083,198 +1076,14 @@ export default function QryptonCommandCenter() {
         </section>
       </main>
 
-      {/* --- Slide-Over Evidence Drawer --- */}
-      {isDrawerOpen && (
-        <div className="fixed inset-0 z-50 overflow-hidden">
-          {/* Backdrop */}
-          <div
-            onClick={closeDrawer}
-            className="absolute inset-0 bg-black/70 backdrop-blur-sm transition-opacity"
-          />
-
-          <div className="fixed inset-y-0 right-0 max-w-full flex pl-10">
-            <div className="w-screen max-w-2xl bg-slate-950 border-l border-slate-800 p-6 flex flex-col justify-between overflow-y-auto shadow-2xl">
-              <div>
-                {/* Drawer Header */}
-                <div className="flex items-center justify-between pb-4 border-b border-slate-800">
-                  <div className="space-y-1">
-                    <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
-                      Cryptographic Evidence &amp; AST Provenance
-                    </span>
-                    <h3 className="text-lg font-bold text-white font-mono flex items-center gap-2">
-                      Finding Details
-                    </h3>
-                  </div>
-                  <button
-                    onClick={closeDrawer}
-                    className="p-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-400 hover:text-white"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                </div>
-
-                {detailLoading ? (
-                  <div className="py-24 flex flex-col items-center justify-center gap-3 text-slate-400 font-mono text-xs">
-                    <Loader2 className="h-8 w-8 animate-spin text-cyan-400" />
-                    Fetching AST provenance &amp; risk factors...
-                  </div>
-                ) : findingDetail ? (
-                  <div className="mt-6 space-y-6">
-                    {/* Finding ID & Copy */}
-                    <div className="p-4 rounded-xl border border-slate-800 bg-slate-900/60 font-mono text-xs space-y-2">
-                      <div className="flex items-center justify-between text-slate-400 text-[11px]">
-                        <span>CANONICAL FINDING ID</span>
-                        <button
-                          onClick={() =>
-                            copyToClipboard(findingDetail.finding.id, "finding-id")
-                          }
-                          className="flex items-center gap-1 text-cyan-400 hover:text-cyan-300"
-                        >
-                          {copiedId === "finding-id" ? (
-                            <>
-                              <Check className="h-3 w-3" /> Copied
-                            </>
-                          ) : (
-                            <>
-                              <Copy className="h-3 w-3" /> Copy ID
-                            </>
-                          )}
-                        </button>
-                      </div>
-                      <div className="text-slate-200 font-bold break-all">
-                        {findingDetail.finding.id}
-                      </div>
-                    </div>
-
-                    {/* Normalized Identity Card */}
-                    <div className="p-4 rounded-xl border border-slate-800 bg-slate-900/60 space-y-3 font-mono text-xs">
-                      <h4 className="text-slate-400 text-[11px] font-bold uppercase tracking-wider">
-                        Normalized Cryptographic Identity
-                      </h4>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <span className="text-[10px] text-slate-500 uppercase block">
-                            Algorithm
-                          </span>
-                          <span className="text-white font-bold">
-                            {findingDetail.finding.algorithm?.value?.canonical_name || "N/A"}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-[10px] text-slate-500 uppercase block">
-                            Family
-                          </span>
-                          <span className="text-slate-200">
-                            {findingDetail.finding.algorithm?.value?.family || "N/A"}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-[10px] text-slate-500 uppercase block">
-                            Confidence Score
-                          </span>
-                          <span className="text-cyan-400 font-bold">
-                            {(findingDetail.finding.confidence * 100).toFixed(0)}%
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-[10px] text-slate-500 uppercase block">
-                            Lifecycle Status
-                          </span>
-                          <span className="text-rose-400 uppercase">
-                            {findingDetail.finding.algorithm?.value?.lifecycle_status || "Deprecated"}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Code AST Excerpts & Locations */}
-                    {findingDetail.evidence_provenance &&
-                      findingDetail.evidence_provenance.length > 0 && (
-                        <div className="space-y-3">
-                          <h4 className="text-slate-400 text-[11px] font-mono font-bold uppercase tracking-wider flex items-center gap-2">
-                            <Code2 className="h-4 w-4 text-cyan-400" />
-                            Source Code AST Snippets &amp; Locations
-                          </h4>
-                          {findingDetail.evidence_provenance.map((ev, i) => (
-                            <div
-                              key={ev.id || i}
-                              className="p-4 rounded-xl border border-slate-800 bg-slate-900/80 font-mono text-xs space-y-2"
-                            >
-                              <div className="flex items-center justify-between text-slate-400 text-[11px]">
-                                <span className="text-cyan-400 font-semibold truncate max-w-[280px]">
-                                  {ev.location?.relative_path || "source/code"}
-                                </span>
-                                <span>
-                                  Lines: {ev.location?.line_start ?? 1} -{" "}
-                                  {ev.location?.line_end ?? 1}
-                                </span>
-                              </div>
-                              {ev.excerpt && (
-                                <pre className="p-3 rounded-lg bg-slate-950 border border-slate-800/80 text-cyan-300/90 overflow-x-auto text-[11px] leading-relaxed">
-                                  <code>{ev.excerpt}</code>
-                                </pre>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                    {/* Recommended Actions */}
-                    {findingDetail.recommendations &&
-                      findingDetail.recommendations.length > 0 && (
-                        <div className="space-y-3 font-mono text-xs">
-                          <h4 className="text-slate-400 text-[11px] font-bold uppercase tracking-wider flex items-center gap-2">
-                            <ShieldCheck className="h-4 w-4 text-emerald-400" />
-                            PQC Migration Remediation
-                          </h4>
-                          {findingDetail.recommendations.map((rec, i) => (
-                            <div
-                              key={rec.id || i}
-                              className="p-4 rounded-xl border border-emerald-500/30 bg-emerald-950/20 text-slate-200 space-y-2"
-                            >
-                              <div className="flex items-center justify-between">
-                                <span className="text-emerald-300 font-bold text-xs">
-                                  {rec.title}
-                                </span>
-                                <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                                  Priority {rec.priority}
-                                </span>
-                              </div>
-                              <p className="text-slate-300 text-xs leading-relaxed">
-                                {rec.action}
-                              </p>
-                              {rec.replacement_algorithm?.value?.canonical_name && (
-                                <div className="text-[11px] text-slate-400 pt-1">
-                                  NIST Target:{" "}
-                                  <strong className="text-emerald-400">
-                                    {rec.replacement_algorithm.value.canonical_name}
-                                  </strong>
-                                </div>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                  </div>
-                ) : (
-                  <div className="py-20 text-center text-slate-500 font-mono text-xs">
-                    Finding details could not be loaded.
-                  </div>
-                )}
-              </div>
-
-              <div className="pt-6 border-t border-slate-800">
-                <button
-                  onClick={closeDrawer}
-                  className="w-full py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 text-xs font-mono font-medium transition-colors"
-                >
-                  Close Evidence Drawer
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <FindingDetail
+        open={isDrawerOpen}
+        loading={detailLoading}
+        detail={findingDetail}
+        onClose={closeDrawer}
+        copiedId={copiedId}
+        onCopy={copyToClipboard}
+      />
 
       <ScanWorkflow
         open={isScanModalOpen}
