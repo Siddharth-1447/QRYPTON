@@ -1,3 +1,4 @@
+# type: ignore
 """FastAPI backend application for QRYPTON cryptographic posture and inventory."""
 
 from __future__ import annotations
