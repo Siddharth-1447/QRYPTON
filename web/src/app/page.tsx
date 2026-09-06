@@ -5,6 +5,7 @@ import { AuthFlow } from "@/components/auth-flow";
 import { ScanWorkflow } from "@/components/scan-workflow";
 import { CryptoInventory } from "@/components/crypto-inventory";
 import { FindingDetail } from "@/components/finding-detail";
+import { RiskPrioritization } from "@/components/risk-prioritization";
 import {
   Shield,
   ShieldAlert,
@@ -733,8 +734,16 @@ export default function QryptonCommandCenter() {
           </div>
         </section>
 
-        {/* --- Dual Command Grid (Heatmap + Roadmap) --- */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+        <RiskPrioritization
+          heatmap={heatmap}
+          inventory={inventory}
+          selected={selectedHeatmapCell}
+          onFilter={setSelectedHeatmapCell}
+          onSelect={openFindingDrawer}
+        />
+
+        {/* --- Legacy Dual Command Grid (Heatmap + Roadmap) --- */}
+        <div className="hidden grid-cols-1 gap-8 lg:grid lg:grid-cols-12">
           {/* Left: 4x4 Risk Heatmap */}
           <section
             id="heatmap"
