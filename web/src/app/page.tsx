@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { AuthFlow } from "@/components/auth-flow";
 import { ScanWorkflow } from "@/components/scan-workflow";
+import { CryptoInventory } from "@/components/crypto-inventory";
 import {
   Shield,
   ShieldAlert,
@@ -937,10 +938,13 @@ export default function QryptonCommandCenter() {
           </section>
         </div>
 
+        <CryptoInventory items={inventory} query={search} onQueryChange={setSearch} onSelect={openFindingDrawer} onClear={() => { setSearch(""); setSelectedHeatmapCell(null); }} />
+
+        {/* Legacy inventory markup retained for API compatibility; the unified workspace above is the visible presentation. */}
         {/* --- Searchable Cryptographic Inventory Table --- */}
         <section
-          id="inventory"
-          className="rounded-2xl border border-slate-800/80 bg-slate-900/60 backdrop-blur-md overflow-hidden"
+          id="legacy-inventory"
+          className="hidden"
         >
           <div className="p-6 border-b border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div>
