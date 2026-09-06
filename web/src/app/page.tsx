@@ -6,6 +6,7 @@ import { ScanWorkflow } from "@/components/scan-workflow";
 import { CryptoInventory } from "@/components/crypto-inventory";
 import { FindingDetail } from "@/components/finding-detail";
 import { RiskPrioritization } from "@/components/risk-prioritization";
+import { LiveTelemetry } from "@/components/live-telemetry";
 import {
   Shield,
   ShieldAlert,
@@ -23,6 +24,8 @@ import {
   Lock,
   X,
   Filter,
+  Moon,
+  Sun,
 } from "lucide-react";
 
 // --- API Domain Types ---
@@ -160,6 +163,18 @@ export default function QryptonCommandCenter() {
   const [authReady, setAuthReady] = useState<boolean>(false);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [apiError, setApiError] = useState<string | null>(null);
+
+  // --- Theme (Light / Executive Dark) ---
+  const [theme, setTheme] = useState<"light" | "dark">("light");
+
+  useEffect(() => {
+    const root = document.documentElement;
+    if (theme === "dark") {
+      root.classList.add("dark");
+    } else {
+      root.classList.remove("dark");
+    }
+  }, [theme]);
 
   // --- Filter & Drawer State ---
   const [search, setSearch] = useState<string>("");
@@ -484,6 +499,12 @@ export default function QryptonCommandCenter() {
                 Dashboard
               </a>
               <a
+                href="#live-scanner"
+                className="px-3 py-1.5 rounded-lg hover:text-white hover:bg-slate-800/60 transition-colors"
+              >
+                Live Scanner
+              </a>
+              <a
                 href="#heatmap"
                 className="px-3 py-1.5 rounded-lg hover:text-white hover:bg-slate-800/60 transition-colors"
               >
@@ -505,6 +526,19 @@ export default function QryptonCommandCenter() {
           </div>
 
           <div className="flex items-center gap-3">
+            <button
+              onClick={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))}
+              title={theme === "dark" ? "Switch to light mode" : "Switch to Executive dark mode"}
+              aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+              className="p-2 rounded-xl border border-slate-800 hover:border-slate-700 bg-slate-900/80 hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-all active:scale-95"
+            >
+              {theme === "dark" ? (
+                <Sun className="h-4 w-4" />
+              ) : (
+                <Moon className="h-4 w-4" />
+              )}
+            </button>
+
             <button
               onClick={() => loadData(true)}
               disabled={refreshing}
@@ -733,6 +767,8 @@ export default function QryptonCommandCenter() {
             </div>
           </div>
         </section>
+
+        <LiveTelemetry />
 
         <RiskPrioritization
           heatmap={heatmap}

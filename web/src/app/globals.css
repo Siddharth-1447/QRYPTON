@@ -23,6 +23,58 @@
   --radius: 0.65rem;
   --shadow-sm: 0 1px 2px rgb(15 23 42 / 0.05);
   --shadow-md: 0 8px 24px rgb(15 23 42 / 0.08);
+
+  /* Tokenized surfaces/tints so the compatibility layer re-themes with the palette. */
+  --surface-translucent: rgb(255 255 255 / 0.94);
+  --tint-primary: color-mix(in srgb, var(--primary) 10%, white);
+  --tint-primary-fg: var(--primary);
+  --tint-primary-border: #b9cbe7;
+  --tint-critical-bg: #fff1f0;
+  --tint-critical-border: #f3c4c0;
+  --tint-high-bg: #fff4ed;
+  --tint-amber-bg: #fff8e7;
+  --tint-info-bg: #eef4ff;
+  --tint-success-bg: #edf8f1;
+  --selection-bg: #dbeafe;
+  --selection-fg: #172033;
+}
+
+/* Executive SaaS Dark System — deep obsidian surfaces, crisp monochrome type, strictly functional alert colors. */
+.dark {
+  --background: #0b0f17;
+  --foreground: #f8fafc;
+  --surface: #0f172a;
+  --surface-subtle: #131c2e;
+  --surface-muted: #1e293b;
+  --border: #1e293b;
+  --border-strong: #334155;
+  --muted: #94a3b8;
+  --primary: #3b82f6;
+  --primary-foreground: #ffffff;
+  --accent: #2dd4bf;
+  --critical: #f04438;
+  --high: #fb923c;
+  --medium: #fbbf24;
+  --low: #34d399;
+  --info: #60a5fa;
+  --success: #34d399;
+  --warning: #fbbf24;
+  --danger: #f04438;
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-md: 0 10px 30px rgb(0 0 0 / 0.5);
+
+  --surface-translucent: rgb(15 23 42 / 0.72);
+  --tint-primary: color-mix(in srgb, var(--primary) 16%, var(--surface));
+  --tint-primary-fg: #7cb0ff;
+  --tint-primary-border: color-mix(in srgb, var(--primary) 35%, var(--border));
+  --tint-critical-bg: color-mix(in srgb, var(--critical) 14%, var(--surface));
+  --tint-critical-border: color-mix(in srgb, var(--critical) 40%, var(--border));
+  --tint-high-bg: color-mix(in srgb, var(--high) 14%, var(--surface));
+  --tint-amber-bg: color-mix(in srgb, var(--medium) 14%, var(--surface));
+  --tint-info-bg: color-mix(in srgb, var(--info) 14%, var(--surface));
+  --tint-success-bg: color-mix(in srgb, var(--success) 14%, var(--surface));
+  --selection-bg: color-mix(in srgb, var(--primary) 40%, var(--surface));
+  --selection-fg: #f8fafc;
 }
 
 @theme inline {
@@ -49,26 +101,26 @@
 html { background: var(--background); scroll-behavior: smooth; }
 body { background: var(--background); color: var(--foreground); font-family: Arial, Helvetica, sans-serif; }
 button, a, input, select { outline-color: var(--primary); }
-::selection { background: #dbeafe; color: #172033; }
+::selection { background: var(--selection-bg); color: var(--selection-fg); }
 
 /* Compatibility layer: keeps existing dashboard structure while moving it onto the unified system. */
 .bg-slate-950, .bg-slate-900, .bg-slate-800 { background-color: var(--background) !important; }
-.bg-slate-900\/60, .bg-slate-900\/80, .bg-slate-950\/80, .bg-slate-900\/90 { background-color: rgb(255 255 255 / 0.94) !important; }
+.bg-slate-900\/60, .bg-slate-900\/80, .bg-slate-950\/80, .bg-slate-950\/70, .bg-slate-900\/90 { background-color: var(--surface-translucent) !important; }
 .text-slate-100, .text-slate-200, .text-white { color: var(--foreground) !important; }
-.text-slate-300, .text-slate-400, .text-slate-500 { color: var(--muted) !important; }
-.border-slate-800, .border-slate-700, .border-slate-600 { border-color: var(--border) !important; }
+.text-slate-300, .text-slate-400, .text-slate-500, .text-slate-600 { color: var(--muted) !important; }
+.border-slate-800, .border-slate-700, .border-slate-600, .border-slate-800\/80 { border-color: var(--border) !important; }
 .rounded-2xl, .rounded-xl { border-radius: var(--radius) !important; }
 .shadow-2xl, .shadow-xl, .shadow-lg { box-shadow: var(--shadow-md) !important; }
 .bg-gradient-to-r, .bg-gradient-to-tr { background-image: none !important; background-color: var(--primary) !important; }
-[class*="bg-cyan-"], [class*="bg-blue-"], [class*="bg-indigo-"] { background-color: color-mix(in srgb, var(--primary) 10%, white) !important; }
-[class*="text-cyan-"], [class*="text-blue-"], [class*="text-indigo-"] { color: var(--primary) !important; }
-[class*="border-cyan-"], [class*="border-blue-"], [class*="border-indigo-"] { border-color: #b9cbe7 !important; }
-[class*="bg-rose-"], [class*="bg-red-"] { background-color: #fff1f0 !important; }
+[class*="bg-cyan-"], [class*="bg-blue-"], [class*="bg-indigo-"] { background-color: var(--tint-primary) !important; }
+[class*="text-cyan-"], [class*="text-blue-"], [class*="text-indigo-"] { color: var(--tint-primary-fg) !important; }
+[class*="border-cyan-"], [class*="border-blue-"], [class*="border-indigo-"] { border-color: var(--tint-primary-border) !important; }
+[class*="bg-rose-"], [class*="bg-red-"] { background-color: var(--tint-critical-bg) !important; }
 [class*="text-rose-"], [class*="text-red-"] { color: var(--critical) !important; }
-[class*="border-rose-"], [class*="border-red-"] { border-color: #f3c4c0 !important; }
-[class*="bg-amber-"] { background-color: #fff8e7 !important; }
+[class*="border-rose-"], [class*="border-red-"] { border-color: var(--tint-critical-border) !important; }
+[class*="bg-amber-"] { background-color: var(--tint-amber-bg) !important; }
 [class*="text-amber-"] { color: var(--medium) !important; }
-[class*="bg-emerald-"], [class*="bg-green-"] { background-color: #edf8f1 !important; }
+[class*="bg-emerald-"], [class*="bg-green-"] { background-color: var(--tint-success-bg) !important; }
 [class*="text-emerald-"], [class*="text-green-"] { color: var(--success) !important; }
 
 @media (max-width: 640px) {
@@ -83,9 +135,23 @@ button, a, input, select { outline-color: var(--primary); }
 .qrypton-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-sm); }
 .qrypton-card:hover { box-shadow: var(--shadow-md); }
 .qrypton-kicker { color: var(--muted); font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
-.qrypton-risk-critical { color: var(--critical); background: #fff1f0; }
-.qrypton-risk-high { color: var(--high); background: #fff4ed; }
-.qrypton-risk-medium { color: var(--medium); background: #fff8e7; }
-.qrypton-risk-low { color: var(--low); background: #edf8f1; }
-.qrypton-risk-info { color: var(--info); background: #eef4ff; }
-.qrypton-risk-success { color: var(--success); background: #edf8f1; }
+.qrypton-risk-critical { color: var(--critical); background: var(--tint-critical-bg); }
+.qrypton-risk-high { color: var(--high); background: var(--tint-high-bg); }
+.qrypton-risk-medium { color: var(--medium); background: var(--tint-amber-bg); }
+.qrypton-risk-low { color: var(--low); background: var(--tint-success-bg); }
+.qrypton-risk-info { color: var(--info); background: var(--tint-info-bg); }
+.qrypton-risk-success { color: var(--success); background: var(--tint-success-bg); }
+
+/* Live scanner sweep — subtle, analytical, disabled under reduced motion. */
+@keyframes qrypton-sweep {
+  0% { transform: translateX(-30%); opacity: 0; }
+  20% { opacity: 1; }
+  80% { opacity: 1; }
+  100% { transform: translateX(430%); opacity: 0; }
+}
+.qrypton-scanline { animation: qrypton-sweep 2.4s cubic-bezier(0.4, 0, 0.2, 1) infinite; }
+@keyframes qrypton-rowin {
+  0% { opacity: 0; transform: translateY(-4px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+.qrypton-rowin { animation: qrypton-rowin 0.35s ease-out; }
