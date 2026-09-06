@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useMemo, useCallback } from "react";
+import { AuthFlow } from "@/components/auth-flow";
 import {
   Shield,
   ShieldAlert,
@@ -158,6 +159,7 @@ export default function QryptonCommandCenter() {
   const [roadmap, setRoadmap] = useState<RoadmapRow[]>([]);
 
   const [loading, setLoading] = useState<boolean>(true);
+  const [authReady, setAuthReady] = useState<boolean>(false);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [apiError, setApiError] = useState<string | null>(null);
 
@@ -433,6 +435,10 @@ export default function QryptonCommandCenter() {
     "high",
     "critical",
   ];
+
+  if (!authReady) {
+    return <AuthFlow onComplete={() => setAuthReady(true)} />;
+  }
 
   if (loading) {
     return (
