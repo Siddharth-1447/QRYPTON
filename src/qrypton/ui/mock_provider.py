@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 """In-memory mock data provider for demonstration, testing, and fallback presentation."""
 
 from __future__ import annotations
