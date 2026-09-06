@@ -21,4 +21,3 @@ class RunStore(Protocol):
     def list_runs(
         self, *, tenant_id: TenantId | None = None
     ) -> Sequence[tuple[TenantId, EntityId, str]]: ...
-

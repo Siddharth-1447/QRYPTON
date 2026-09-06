@@ -111,4 +111,3 @@ class SqliteRunStore:
                 (tenant_id,),
             ).fetchall()
         return tuple((str(r[0]), str(r[1]), str(r[2])) for r in rows)
-

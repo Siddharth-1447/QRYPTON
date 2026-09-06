@@ -7,7 +7,7 @@ from qrypton.ui.sqlite_provider import SqliteDashboardDataProvider
 
 
 def test_cbom_export_byte_for_byte_fidelity(
-    populated_sqlite_store: tuple[SqliteRunStore, str, str]
+    populated_sqlite_store: tuple[SqliteRunStore, str, str],
 ) -> None:
     store, tenant_id, run_id = populated_sqlite_store
     provider = SqliteDashboardDataProvider(store)

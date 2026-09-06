@@ -52,9 +52,7 @@ def sample_provenance() -> Provenance:
     )
 
 
-def sample_evidence(
-    evidence_id: str, tenant_id: str, asset_id: str, target_id: str
-) -> Evidence:
+def sample_evidence(evidence_id: str, tenant_id: str, asset_id: str, target_id: str) -> Evidence:
     return Evidence(
         id=evidence_id,
         tenant_id=tenant_id,

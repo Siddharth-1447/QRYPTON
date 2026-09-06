@@ -473,7 +473,7 @@ def _build_mock_data(
     )
 
     cbom_bytes = (
-        b'{\n'
+        b"{\n"
         b'  "bomFormat": "CycloneDX",\n'
         b'  "specVersion": "1.6",\n'
         b'  "serialNumber": "urn:uuid:14470000-0000-4000-8000-000000000001",\n'
@@ -482,10 +482,10 @@ def _build_mock_data(
         b'    "component": {\n'
         b'      "type": "application",\n'
         b'      "name": "QRYPTON-Enterprise-Demo"\n'
-        b'    }\n'
-        b'  },\n'
+        b"    }\n"
+        b"  },\n"
         b'  "components": [\n'
-        b'    {\n'
+        b"    {\n"
         b'      "type": "cryptographic-asset",\n'
         b'      "name": "RSA-1024",\n'
         b'      "cryptoProperties": {\n'
@@ -494,10 +494,10 @@ def _build_mock_data(
         b'          "name": "RSA",\n'
         b'          "primitive": "asymmetric-encryption",\n'
         b'          "keyLength": 1024\n'
-        b'        }\n'
-        b'      }\n'
-        b'    },\n'
-        b'    {\n'
+        b"        }\n"
+        b"      }\n"
+        b"    },\n"
+        b"    {\n"
         b'      "type": "cryptographic-asset",\n'
         b'      "name": "ML-KEM-768",\n'
         b'      "cryptoProperties": {\n'
@@ -506,11 +506,11 @@ def _build_mock_data(
         b'          "name": "ML-KEM-768",\n'
         b'          "primitive": "key-exchange",\n'
         b'          "keyLength": 768\n'
-        b'        }\n'
-        b'      }\n'
-        b'    }\n'
-        b'  ]\n'
-        b'}'
+        b"        }\n"
+        b"      }\n"
+        b"    }\n"
+        b"  ]\n"
+        b"}"
     )
 
     view = DashboardRunView(

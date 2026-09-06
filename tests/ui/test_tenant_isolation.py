@@ -6,9 +6,7 @@ from qrypton.storage.sqlite import SqliteRunStore
 from qrypton.ui.sqlite_provider import SqliteDashboardDataProvider
 
 
-def test_cross_tenant_isolation(
-    populated_sqlite_store: tuple[SqliteRunStore, str, str]
-) -> None:
+def test_cross_tenant_isolation(populated_sqlite_store: tuple[SqliteRunStore, str, str]) -> None:
     store, tenant_a, run_a = populated_sqlite_store
     provider = SqliteDashboardDataProvider(store)
     tenant_b = f"tenant_{'b' * 52}"
@@ -26,7 +24,5 @@ def test_cross_tenant_isolation(
     assert len(runs_b) == 0
 
     # Detail lookup with mismatched tenant returns None
-    detail_b = provider.get_finding_detail(
-        tenant_id=tenant_b, run_id=run_a, finding_id="finding_1"
-    )
+    detail_b = provider.get_finding_detail(tenant_id=tenant_b, run_id=run_a, finding_id="finding_1")
     assert detail_b is None

@@ -16,9 +16,7 @@ def render_heatmap_view(view: DashboardRunView) -> None:
     """Render the Mosca urgency × business criticality heatmap from persisted cells."""
     st.subheader("Risk heatmap: Mosca urgency × business criticality")
     st.caption("Cell counts are aggregated from persisted assessments only.")
-    st.info(
-        "Business criticality is not stored on current runs. Findings remain in Unclassified."
-    )
+    st.info("Business criticality is not stored on current runs. Findings remain in Unclassified.")
     cell_map = {
         (cell.mosca_urgency, cell.business_criticality): cell for cell in view.heatmap_cells
     }

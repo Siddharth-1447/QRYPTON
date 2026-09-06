@@ -134,6 +134,4 @@ def render_finding_detail_view(
         st.markdown("### Execution failures")
         for failure in detail.failures:
             scanner = failure.scanner_name or "n/a"
-            st.error(
-                f"stage=`{failure.stage}` code=`{failure.error_code}` scanner=`{scanner}`"
-            )
+            st.error(f"stage=`{failure.stage}` code=`{failure.error_code}` scanner=`{scanner}`")

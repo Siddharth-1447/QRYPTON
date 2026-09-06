@@ -33,7 +33,8 @@ def get_provider(tenant_id: str | None = None) -> DashboardDataProvider:
     env_db = os.environ.get("QRYPTON_DB")
     if env_db:
         candidates.append(Path(env_db))
-    candidates.extend([Path("qrypton.db"), Path("qrypton.sqlite3"), Path("qrypton_demo.db")])
+    else:
+        candidates.extend([Path("qrypton.db"), Path("qrypton.sqlite3"), Path("qrypton_demo.db")])
 
     for candidate in candidates:
         if candidate.exists() and candidate.is_file():
