@@ -88,3 +88,4 @@ button, a, input, select { outline-color: var(--primary); }
 .qrypton-risk-medium { color: var(--medium); background: #fff8e7; }
 .qrypton-risk-low { color: var(--low); background: #edf8f1; }
 .qrypton-risk-info { color: var(--info); background: #eef4ff; }
+.qrypton-risk-success { color: var(--success); background: #edf8f1; }

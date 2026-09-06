@@ -442,19 +442,18 @@ export default function QryptonCommandCenter() {
 
   if (loading) {
     return (
-      <div className="flex h-screen w-full flex-col items-center justify-center bg-slate-950 text-slate-200">
-        <div className="relative flex flex-col items-center gap-6 p-8 rounded-2xl border border-slate-800 bg-slate-900/60 backdrop-blur-xl shadow-2xl">
-          <div className="relative">
-            <Shield className="h-16 w-16 text-cyan-500 animate-pulse" />
-            <div className="absolute inset-0 rounded-full bg-cyan-500/20 blur-xl animate-ping" />
+      <div className="flex min-h-screen w-full flex-col items-center justify-center bg-background px-6 text-foreground">
+        <div className="qrypton-card flex w-full max-w-md flex-col items-center gap-6 p-8">
+          <div className="flex size-12 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+            <Shield aria-hidden="true" />
           </div>
-          <div className="text-center space-y-1">
-            <h2 className="text-xl font-mono font-bold tracking-tight text-white flex items-center justify-center gap-2">
-              <Loader2 className="h-5 w-5 animate-spin text-cyan-400" />
-              CONNECTING TO QRYPTON ENGINE
+          <div className="text-center">
+            <h2 className="flex items-center justify-center gap-2 text-lg font-semibold tracking-tight">
+              <Loader2 className="size-4 animate-spin text-primary" aria-hidden="true" />
+              Connecting to QRYPTON
             </h2>
-            <p className="text-xs font-mono text-slate-400">
-              Synchronizing cryptographic inventory & quantum timeline postures...
+            <p className="mt-2 text-sm leading-6 text-muted-foreground">
+              Synchronizing inventory and quantum timeline posture.
             </p>
           </div>
         </div>
@@ -463,14 +462,9 @@ export default function QryptonCommandCenter() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-cyan-500/30 selection:text-cyan-200 antialiased">
-      {/* Background Cyber Grid Accent */}
-      <div className="fixed inset-0 bg-[linear-gradient(to_right,#1e293b15_1px,transparent_1px),linear-gradient(to_bottom,#1e293b15_1px,transparent_1px)] bg-[size:4rem_4rem] pointer-events-none -z-10" />
-      <div className="fixed top-0 left-1/4 w-96 h-96 bg-cyan-500/5 rounded-full blur-3xl pointer-events-none -z-10" />
-      <div className="fixed bottom-0 right-1/4 w-96 h-96 bg-rose-500/5 rounded-full blur-3xl pointer-events-none -z-10" />
-
+    <div className="min-h-screen bg-background font-sans text-foreground antialiased">
       {/* --- Sticky Workspace Header --- */}
-      <header className="sticky top-0 z-40 border-b border-slate-800/80 bg-slate-950/80 backdrop-blur-xl transition-all">
+      <header className="sticky top-0 z-40 border-b border-border bg-card/95 backdrop-blur transition-all">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-6">
             <div className="flex items-center gap-3">
@@ -557,6 +551,33 @@ export default function QryptonCommandCenter() {
             </button>
           </div>
         )}
+
+        <section aria-labelledby="attention-heading" className="qrypton-card overflow-hidden">
+          <div className="flex flex-col gap-4 border-b border-border p-5 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="qrypton-kicker">Operational priority</p>
+              <h2 id="attention-heading" className="mt-1 text-xl font-semibold tracking-tight">What needs attention?</h2>
+              <p className="mt-1 text-sm leading-6 text-muted-foreground">Start with the highest-impact exposure and use the evidence drawer to assign the next action.</p>
+            </div>
+            <button onClick={() => document.getElementById("inventory")?.scrollIntoView({ behavior: "smooth" })} className="inline-flex min-h-9 items-center justify-center rounded-md border border-border px-3 text-sm font-semibold text-foreground transition-colors hover:bg-muted">Review inventory <ChevronRight data-icon="inline-end" /></button>
+          </div>
+          <div className="grid gap-0 divide-y divide-border sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+            <div className="flex items-start gap-3 p-5"><div className="rounded-md bg-red-50 p-2 text-red-700"><AlertTriangle className="size-4" aria-hidden="true" /></div><div><p className="text-2xl font-semibold tabular-nums">{posture?.critical_findings_count ?? 0}</p><p className="text-sm font-medium">Critical findings</p><p className="mt-1 text-xs leading-5 text-muted-foreground">Prioritize remediation before the next review.</p></div></div>
+            <div className="flex items-start gap-3 p-5"><div className="rounded-md bg-amber-50 p-2 text-amber-700"><ShieldAlert className="size-4" aria-hidden="true" /></div><div><p className="text-2xl font-semibold tabular-nums">{moscaViolation ? `${moscaViolation.deficit.toFixed(1)}y` : "—"}</p><p className="text-sm font-medium">Mosca deficit</p><p className="mt-1 text-xs leading-5 text-muted-foreground">{moscaViolation ? "Migration effort exceeds the security horizon." : "No timeline deficit currently detected."}</p></div></div>
+            <div className="flex items-start gap-3 p-5"><div className="rounded-md bg-blue-50 p-2 text-primary"><Search className="size-4" aria-hidden="true" /></div><div><p className="text-2xl font-semibold tabular-nums">{posture?.unique_asset_ids ?? 0}</p><p className="text-sm font-medium">Assets to validate</p><p className="mt-1 text-xs leading-5 text-muted-foreground">Open the inventory to inspect evidence and ownership.</p></div></div>
+          </div>
+        </section>
+
+        <section aria-labelledby="scan-status-heading" className="qrypton-card p-5">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div><p className="qrypton-kicker">Coverage signal</p><h2 id="scan-status-heading" className="mt-1 text-base font-semibold">Recent scan activity</h2></div>
+            <span className={`inline-flex w-fit items-center gap-2 rounded-full px-2.5 py-1 text-xs font-semibold ${posture?.run_status?.toLowerCase().includes("fail") ? "qrypton-risk-critical" : posture?.run_status?.toLowerCase().includes("run") || posture?.run_status?.toLowerCase().includes("progress") ? "qrypton-risk-medium" : "qrypton-risk-success"}`}><span className="size-1.5 rounded-full bg-current" />{posture?.run_status ? posture.run_status.replace(/_/g, " ") : "No scan status"}</span>
+          </div>
+          <div className="mt-4 flex flex-col gap-3 rounded-md border border-border bg-muted/40 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div><p className="text-sm font-medium">{posture?.run_status?.toLowerCase().includes("run") ? "A scan is currently evaluating your cryptographic estate." : posture?.total_findings ? "Latest scan completed with actionable findings." : "No completed scan data is available yet."}</p><p className="mt-1 text-xs leading-5 text-muted-foreground">{posture?.scanner_failed_count ? `${posture.scanner_failed_count} scanner failed. Review coverage before relying on this posture.` : "Coverage and findings are reflected in the command center below."}</p></div>
+            <button onClick={() => { setScanStep(1); setIsScanModalOpen(true); }} className="inline-flex min-h-9 shrink-0 items-center justify-center rounded-md bg-primary px-3 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90">Run new scan</button>
+          </div>
+        </section>
 
         {/* --- Mosca Urgency Warning Banner ($X + Y > Z$) --- */}
         {moscaViolation && (
