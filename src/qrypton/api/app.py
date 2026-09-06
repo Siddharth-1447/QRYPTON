@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -96,7 +96,7 @@ def _resolve_view(
 
 
 @app.get("/", include_in_schema=False)
-def root_redirect():
+def root_redirect() -> RedirectResponse:
     return RedirectResponse(url="/docs")
 
 
@@ -139,7 +139,7 @@ class ScanRequest(BaseModel):
 
 
 @app.post("/api/v1/scans")
-def create_scan(request: ScanRequest) -> dict:
+def create_scan(request: ScanRequest) -> dict[str, Any]:
     """Runs/simulates the scan and saves context."""
     return {
         "status": "accepted",
