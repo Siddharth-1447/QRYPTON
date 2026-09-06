@@ -170,6 +170,7 @@ export default function QryptonCommandCenter() {
   } | null>(null);
 
   const [findingDetail, setFindingDetail] = useState<FindingDetail | null>(null);
+  const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState<boolean>(false);
   const [isDrawerOpen, setIsDrawerOpen] = useState<boolean>(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
