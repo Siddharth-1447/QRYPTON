@@ -39,42 +39,42 @@
   --selection-fg: #172033;
 }
 
-/* Executive SaaS Dark System — deep obsidian surfaces, crisp monochrome type, strictly functional alert colors. */
+/* Executive SaaS Dark System — pure obsidian black + charcoal surfaces, crisp monochrome type, strictly functional alert colors. */
 .dark {
-  --background: #0b0f17;
-  --foreground: #f8fafc;
-  --surface: #0f172a;
-  --surface-subtle: #131c2e;
-  --surface-muted: #1e293b;
-  --border: #1e293b;
-  --border-strong: #334155;
-  --muted: #94a3b8;
-  --primary: #3b82f6;
-  --primary-foreground: #ffffff;
-  --accent: #2dd4bf;
+  --background: #000000;
+  --foreground: #f4f4f5;
+  --surface: #09090b;
+  --surface-subtle: #101012;
+  --surface-muted: #18181b;
+  --border: #27272a;
+  --border-strong: #3f3f46;
+  --muted: #a1a1aa;
+  --primary: #f4f4f5;
+  --primary-foreground: #09090b;
+  --accent: #34d399;
   --critical: #f04438;
   --high: #fb923c;
   --medium: #fbbf24;
   --low: #34d399;
-  --info: #60a5fa;
+  --info: #a1a1aa;
   --success: #34d399;
   --warning: #fbbf24;
   --danger: #f04438;
-  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
-  --shadow-md: 0 10px 30px rgb(0 0 0 / 0.5);
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.6);
+  --shadow-md: 0 12px 34px rgb(0 0 0 / 0.72);
 
-  --surface-translucent: rgb(15 23 42 / 0.72);
-  --tint-primary: color-mix(in srgb, var(--primary) 16%, var(--surface));
-  --tint-primary-fg: #7cb0ff;
-  --tint-primary-border: color-mix(in srgb, var(--primary) 35%, var(--border));
-  --tint-critical-bg: color-mix(in srgb, var(--critical) 14%, var(--surface));
-  --tint-critical-border: color-mix(in srgb, var(--critical) 40%, var(--border));
-  --tint-high-bg: color-mix(in srgb, var(--high) 14%, var(--surface));
-  --tint-amber-bg: color-mix(in srgb, var(--medium) 14%, var(--surface));
-  --tint-info-bg: color-mix(in srgb, var(--info) 14%, var(--surface));
-  --tint-success-bg: color-mix(in srgb, var(--success) 14%, var(--surface));
-  --selection-bg: color-mix(in srgb, var(--primary) 40%, var(--surface));
-  --selection-fg: #f8fafc;
+  --surface-translucent: rgb(9 9 11 / 0.82);
+  --tint-primary: #1b1b1f;
+  --tint-primary-fg: #e4e4e7;
+  --tint-primary-border: #3f3f46;
+  --tint-critical-bg: color-mix(in srgb, var(--critical) 15%, #09090b);
+  --tint-critical-border: color-mix(in srgb, var(--critical) 42%, #27272a);
+  --tint-high-bg: color-mix(in srgb, var(--high) 14%, #09090b);
+  --tint-amber-bg: color-mix(in srgb, var(--medium) 14%, #09090b);
+  --tint-info-bg: #141416;
+  --tint-success-bg: color-mix(in srgb, var(--success) 14%, #09090b);
+  --selection-bg: #27272a;
+  --selection-fg: #f4f4f5;
 }
 
 @theme inline {
@@ -99,6 +99,7 @@
 
 * { border-color: var(--border); }
 html { background: var(--background); scroll-behavior: smooth; }
+section[id] { scroll-margin-top: 4.5rem; }
 body { background: var(--background); color: var(--foreground); font-family: Arial, Helvetica, sans-serif; }
 button, a, input, select { outline-color: var(--primary); }
 ::selection { background: var(--selection-bg); color: var(--selection-fg); }

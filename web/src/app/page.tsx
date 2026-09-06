@@ -7,6 +7,7 @@ import { CryptoInventory } from "@/components/crypto-inventory";
 import { FindingDetail } from "@/components/finding-detail";
 import { RiskPrioritization } from "@/components/risk-prioritization";
 import { LiveTelemetry } from "@/components/live-telemetry";
+import { Sidebar, NAV_SECTIONS } from "@/components/sidebar";
 import {
   Shield,
   ShieldAlert,
@@ -18,8 +19,6 @@ import {
   XCircle,
   CheckCircle2,
   Layers,
-  Sparkles,
-  RefreshCw,
   ChevronRight,
   Lock,
   X,
