@@ -1,6 +1,11 @@
 "use client";
 
 import React, { useState, useEffect, useMemo, useCallback } from "react";
+import { AuthFlow } from "@/components/auth-flow";
+import { ScanWorkflow } from "@/components/scan-workflow";
+import { CryptoInventory } from "@/components/crypto-inventory";
+import { FindingDetail } from "@/components/finding-detail";
+import { RiskPrioritization } from "@/components/risk-prioritization";
 import {
   Shield,
   ShieldAlert,
@@ -14,15 +19,9 @@ import {
   Layers,
   Sparkles,
   RefreshCw,
-  Code2,
   ChevronRight,
   Lock,
-  FolderGit2,
-  Box,
-  Binary,
   X,
-  Copy,
-  Check,
   Filter,
 } from "lucide-react";
 
@@ -158,6 +157,7 @@ export default function QryptonCommandCenter() {
   const [roadmap, setRoadmap] = useState<RoadmapRow[]>([]);
 
   const [loading, setLoading] = useState<boolean>(true);
+  const [authReady, setAuthReady] = useState<boolean>(false);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [apiError, setApiError] = useState<string | null>(null);
 
@@ -176,7 +176,6 @@ export default function QryptonCommandCenter() {
 
   // --- Scan Modal State ---
   const [isScanModalOpen, setIsScanModalOpen] = useState<boolean>(false);
-  const [scanStep, setScanStep] = useState<number>(1);
   const [scanSubmitting, setScanSubmitting] = useState<boolean>(false);
   const [scanSuccessMessage, setScanSuccessMessage] = useState<string | null>(null);
 
@@ -293,7 +292,6 @@ export default function QryptonCommandCenter() {
 
   // --- Fetch Single Finding Detail ---
   const openFindingDrawer = async (findingId: string) => {
-    setSelectedFindingId(findingId);
     setIsDrawerOpen(true);
     setDetailLoading(true);
     setFindingDetail(null);
@@ -352,8 +350,7 @@ export default function QryptonCommandCenter() {
       setTimeout(() => {
         setIsScanModalOpen(false);
         setScanSuccessMessage(null);
-        setScanStep(1);
-        loadData(true);
+              loadData(true);
       }, 1200);
     } catch (err: unknown) {
       alert(err instanceof Error ? err.message : "Failed to trigger scan");
@@ -433,21 +430,24 @@ export default function QryptonCommandCenter() {
     "critical",
   ];
 
+  if (!authReady) {
+    return <AuthFlow onComplete={() => setAuthReady(true)} />;
+  }
+
   if (loading) {
     return (
-      <div className="flex h-screen w-full flex-col items-center justify-center bg-slate-950 text-slate-200">
-        <div className="relative flex flex-col items-center gap-6 p-8 rounded-2xl border border-slate-800 bg-slate-900/60 backdrop-blur-xl shadow-2xl">
-          <div className="relative">
-            <Shield className="h-16 w-16 text-cyan-500 animate-pulse" />
-            <div className="absolute inset-0 rounded-full bg-cyan-500/20 blur-xl animate-ping" />
+      <div className="flex min-h-screen w-full flex-col items-center justify-center bg-background px-6 text-foreground">
+        <div className="qrypton-card flex w-full max-w-md flex-col items-center gap-6 p-8">
+          <div className="flex size-12 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+            <Shield aria-hidden="true" />
           </div>
-          <div className="text-center space-y-1">
-            <h2 className="text-xl font-mono font-bold tracking-tight text-white flex items-center justify-center gap-2">
-              <Loader2 className="h-5 w-5 animate-spin text-cyan-400" />
-              CONNECTING TO QRYPTON ENGINE
+          <div className="text-center">
+            <h2 className="flex items-center justify-center gap-2 text-lg font-semibold tracking-tight">
+              <Loader2 className="size-4 animate-spin text-primary" aria-hidden="true" />
+              Connecting to QRYPTON
             </h2>
-            <p className="text-xs font-mono text-slate-400">
-              Synchronizing cryptographic inventory & quantum timeline postures...
+            <p className="mt-2 text-sm leading-6 text-muted-foreground">
+              Synchronizing inventory and quantum timeline posture.
             </p>
           </div>
         </div>
@@ -456,14 +456,9 @@ export default function QryptonCommandCenter() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-cyan-500/30 selection:text-cyan-200 antialiased">
-      {/* Background Cyber Grid Accent */}
-      <div className="fixed inset-0 bg-[linear-gradient(to_right,#1e293b15_1px,transparent_1px),linear-gradient(to_bottom,#1e293b15_1px,transparent_1px)] bg-[size:4rem_4rem] pointer-events-none -z-10" />
-      <div className="fixed top-0 left-1/4 w-96 h-96 bg-cyan-500/5 rounded-full blur-3xl pointer-events-none -z-10" />
-      <div className="fixed bottom-0 right-1/4 w-96 h-96 bg-rose-500/5 rounded-full blur-3xl pointer-events-none -z-10" />
-
+    <div className="min-h-screen bg-background font-sans text-foreground antialiased">
       {/* --- Sticky Workspace Header --- */}
-      <header className="sticky top-0 z-40 border-b border-slate-800/80 bg-slate-950/80 backdrop-blur-xl transition-all">
+      <header className="sticky top-0 z-40 border-b border-border bg-card/95 backdrop-blur transition-all">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-6">
             <div className="flex items-center gap-3">
@@ -521,8 +516,7 @@ export default function QryptonCommandCenter() {
 
             <button
               onClick={() => {
-                setScanStep(1);
-                setIsScanModalOpen(true);
+                              setIsScanModalOpen(true);
               }}
               className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-500 via-blue-600 to-indigo-600 hover:from-cyan-400 hover:to-indigo-500 text-white font-medium text-xs tracking-wide shadow-lg shadow-cyan-500/25 hover:shadow-cyan-500/40 border border-white/10 active:scale-95 transition-all"
             >
@@ -550,6 +544,33 @@ export default function QryptonCommandCenter() {
             </button>
           </div>
         )}
+
+        <section aria-labelledby="attention-heading" className="qrypton-card overflow-hidden">
+          <div className="flex flex-col gap-4 border-b border-border p-5 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="qrypton-kicker">Operational priority</p>
+              <h2 id="attention-heading" className="mt-1 text-xl font-semibold tracking-tight">What needs attention?</h2>
+              <p className="mt-1 text-sm leading-6 text-muted-foreground">Start with the highest-impact exposure and use the evidence drawer to assign the next action.</p>
+            </div>
+            <button onClick={() => document.getElementById("inventory")?.scrollIntoView({ behavior: "smooth" })} className="inline-flex min-h-9 items-center justify-center rounded-md border border-border px-3 text-sm font-semibold text-foreground transition-colors hover:bg-muted">Review inventory <ChevronRight data-icon="inline-end" /></button>
+          </div>
+          <div className="grid gap-0 divide-y divide-border sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+            <div className="flex items-start gap-3 p-5"><div className="rounded-md bg-red-50 p-2 text-red-700"><AlertTriangle className="size-4" aria-hidden="true" /></div><div><p className="text-2xl font-semibold tabular-nums">{posture?.critical_findings_count ?? 0}</p><p className="text-sm font-medium">Critical findings</p><p className="mt-1 text-xs leading-5 text-muted-foreground">Prioritize remediation before the next review.</p></div></div>
+            <div className="flex items-start gap-3 p-5"><div className="rounded-md bg-amber-50 p-2 text-amber-700"><ShieldAlert className="size-4" aria-hidden="true" /></div><div><p className="text-2xl font-semibold tabular-nums">{moscaViolation ? `${moscaViolation.deficit.toFixed(1)}y` : "—"}</p><p className="text-sm font-medium">Mosca deficit</p><p className="mt-1 text-xs leading-5 text-muted-foreground">{moscaViolation ? "Migration effort exceeds the security horizon." : "No timeline deficit currently detected."}</p></div></div>
+            <div className="flex items-start gap-3 p-5"><div className="rounded-md bg-blue-50 p-2 text-primary"><Search className="size-4" aria-hidden="true" /></div><div><p className="text-2xl font-semibold tabular-nums">{posture?.unique_asset_ids ?? 0}</p><p className="text-sm font-medium">Assets to validate</p><p className="mt-1 text-xs leading-5 text-muted-foreground">Open the inventory to inspect evidence and ownership.</p></div></div>
+          </div>
+        </section>
+
+        <section aria-labelledby="scan-status-heading" className="qrypton-card p-5">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div><p className="qrypton-kicker">Coverage signal</p><h2 id="scan-status-heading" className="mt-1 text-base font-semibold">Recent scan activity</h2></div>
+            <span className={`inline-flex w-fit items-center gap-2 rounded-full px-2.5 py-1 text-xs font-semibold ${posture?.run_status?.toLowerCase().includes("fail") ? "qrypton-risk-critical" : posture?.run_status?.toLowerCase().includes("run") || posture?.run_status?.toLowerCase().includes("progress") ? "qrypton-risk-medium" : "qrypton-risk-success"}`}><span className="size-1.5 rounded-full bg-current" />{posture?.run_status ? posture.run_status.replace(/_/g, " ") : "No scan status"}</span>
+          </div>
+          <div className="mt-4 flex flex-col gap-3 rounded-md border border-border bg-muted/40 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div><p className="text-sm font-medium">{posture?.run_status?.toLowerCase().includes("run") ? "A scan is currently evaluating your cryptographic estate." : posture?.total_findings ? "Latest scan completed with actionable findings." : "No completed scan data is available yet."}</p><p className="mt-1 text-xs leading-5 text-muted-foreground">{posture?.scanner_failed_count ? `${posture.scanner_failed_count} scanner failed. Review coverage before relying on this posture.` : "Coverage and findings are reflected in the command center below."}</p></div>
+            <button onClick={() => setIsScanModalOpen(true)} className="inline-flex min-h-9 shrink-0 items-center justify-center rounded-md bg-primary px-3 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90">Run new scan</button>
+          </div>
+        </section>
 
         {/* --- Mosca Urgency Warning Banner ($X + Y > Z$) --- */}
         {moscaViolation && (
@@ -713,8 +734,16 @@ export default function QryptonCommandCenter() {
           </div>
         </section>
 
-        {/* --- Dual Command Grid (Heatmap + Roadmap) --- */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+        <RiskPrioritization
+          heatmap={heatmap}
+          inventory={inventory}
+          selected={selectedHeatmapCell}
+          onFilter={setSelectedHeatmapCell}
+          onSelect={openFindingDrawer}
+        />
+
+        {/* --- Legacy Dual Command Grid (Heatmap + Roadmap) --- */}
+        <div className="hidden grid-cols-1 gap-8 lg:grid lg:grid-cols-12">
           {/* Left: 4x4 Risk Heatmap */}
           <section
             id="heatmap"
@@ -911,10 +940,13 @@ export default function QryptonCommandCenter() {
           </section>
         </div>
 
+        <CryptoInventory items={inventory} query={search} onQueryChange={setSearch} onSelect={openFindingDrawer} onClear={() => { setSearch(""); setSelectedHeatmapCell(null); }} />
+
+        {/* Legacy inventory markup retained for API compatibility; the unified workspace above is the visible presentation. */}
         {/* --- Searchable Cryptographic Inventory Table --- */}
         <section
-          id="inventory"
-          className="rounded-2xl border border-slate-800/80 bg-slate-900/60 backdrop-blur-md overflow-hidden"
+          id="legacy-inventory"
+          className="hidden"
         >
           <div className="p-6 border-b border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div>
@@ -1053,498 +1085,24 @@ export default function QryptonCommandCenter() {
         </section>
       </main>
 
-      {/* --- Slide-Over Evidence Drawer --- */}
-      {isDrawerOpen && (
-        <div className="fixed inset-0 z-50 overflow-hidden">
-          {/* Backdrop */}
-          <div
-            onClick={closeDrawer}
-            className="absolute inset-0 bg-black/70 backdrop-blur-sm transition-opacity"
-          />
+      <FindingDetail
+        open={isDrawerOpen}
+        loading={detailLoading}
+        detail={findingDetail}
+        onClose={closeDrawer}
+        copiedId={copiedId}
+        onCopy={copyToClipboard}
+      />
 
-          <div className="fixed inset-y-0 right-0 max-w-full flex pl-10">
-            <div className="w-screen max-w-2xl bg-slate-950 border-l border-slate-800 p-6 flex flex-col justify-between overflow-y-auto shadow-2xl">
-              <div>
-                {/* Drawer Header */}
-                <div className="flex items-center justify-between pb-4 border-b border-slate-800">
-                  <div className="space-y-1">
-                    <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
-                      Cryptographic Evidence &amp; AST Provenance
-                    </span>
-                    <h3 className="text-lg font-bold text-white font-mono flex items-center gap-2">
-                      Finding Details
-                    </h3>
-                  </div>
-                  <button
-                    onClick={closeDrawer}
-                    className="p-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-400 hover:text-white"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                </div>
-
-                {detailLoading ? (
-                  <div className="py-24 flex flex-col items-center justify-center gap-3 text-slate-400 font-mono text-xs">
-                    <Loader2 className="h-8 w-8 animate-spin text-cyan-400" />
-                    Fetching AST provenance &amp; risk factors...
-                  </div>
-                ) : findingDetail ? (
-                  <div className="mt-6 space-y-6">
-                    {/* Finding ID & Copy */}
-                    <div className="p-4 rounded-xl border border-slate-800 bg-slate-900/60 font-mono text-xs space-y-2">
-                      <div className="flex items-center justify-between text-slate-400 text-[11px]">
-                        <span>CANONICAL FINDING ID</span>
-                        <button
-                          onClick={() =>
-                            copyToClipboard(findingDetail.finding.id, "finding-id")
-                          }
-                          className="flex items-center gap-1 text-cyan-400 hover:text-cyan-300"
-                        >
-                          {copiedId === "finding-id" ? (
-                            <>
-                              <Check className="h-3 w-3" /> Copied
-                            </>
-                          ) : (
-                            <>
-                              <Copy className="h-3 w-3" /> Copy ID
-                            </>
-                          )}
-                        </button>
-                      </div>
-                      <div className="text-slate-200 font-bold break-all">
-                        {findingDetail.finding.id}
-                      </div>
-                    </div>
-
-                    {/* Normalized Identity Card */}
-                    <div className="p-4 rounded-xl border border-slate-800 bg-slate-900/60 space-y-3 font-mono text-xs">
-                      <h4 className="text-slate-400 text-[11px] font-bold uppercase tracking-wider">
-                        Normalized Cryptographic Identity
-                      </h4>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <span className="text-[10px] text-slate-500 uppercase block">
-                            Algorithm
-                          </span>
-                          <span className="text-white font-bold">
-                            {findingDetail.finding.algorithm?.value?.canonical_name || "N/A"}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-[10px] text-slate-500 uppercase block">
-                            Family
-                          </span>
-                          <span className="text-slate-200">
-                            {findingDetail.finding.algorithm?.value?.family || "N/A"}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-[10px] text-slate-500 uppercase block">
-                            Confidence Score
-                          </span>
-                          <span className="text-cyan-400 font-bold">
-                            {(findingDetail.finding.confidence * 100).toFixed(0)}%
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-[10px] text-slate-500 uppercase block">
-                            Lifecycle Status
-                          </span>
-                          <span className="text-rose-400 uppercase">
-                            {findingDetail.finding.algorithm?.value?.lifecycle_status || "Deprecated"}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Code AST Excerpts & Locations */}
-                    {findingDetail.evidence_provenance &&
-                      findingDetail.evidence_provenance.length > 0 && (
-                        <div className="space-y-3">
-                          <h4 className="text-slate-400 text-[11px] font-mono font-bold uppercase tracking-wider flex items-center gap-2">
-                            <Code2 className="h-4 w-4 text-cyan-400" />
-                            Source Code AST Snippets &amp; Locations
-                          </h4>
-                          {findingDetail.evidence_provenance.map((ev, i) => (
-                            <div
-                              key={ev.id || i}
-                              className="p-4 rounded-xl border border-slate-800 bg-slate-900/80 font-mono text-xs space-y-2"
-                            >
-                              <div className="flex items-center justify-between text-slate-400 text-[11px]">
-                                <span className="text-cyan-400 font-semibold truncate max-w-[280px]">
-                                  {ev.location?.relative_path || "source/code"}
-                                </span>
-                                <span>
-                                  Lines: {ev.location?.line_start ?? 1} -{" "}
-                                  {ev.location?.line_end ?? 1}
-                                </span>
-                              </div>
-                              {ev.excerpt && (
-                                <pre className="p-3 rounded-lg bg-slate-950 border border-slate-800/80 text-cyan-300/90 overflow-x-auto text-[11px] leading-relaxed">
-                                  <code>{ev.excerpt}</code>
-                                </pre>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                    {/* Recommended Actions */}
-                    {findingDetail.recommendations &&
-                      findingDetail.recommendations.length > 0 && (
-                        <div className="space-y-3 font-mono text-xs">
-                          <h4 className="text-slate-400 text-[11px] font-bold uppercase tracking-wider flex items-center gap-2">
-                            <ShieldCheck className="h-4 w-4 text-emerald-400" />
-                            PQC Migration Remediation
-                          </h4>
-                          {findingDetail.recommendations.map((rec, i) => (
-                            <div
-                              key={rec.id || i}
-                              className="p-4 rounded-xl border border-emerald-500/30 bg-emerald-950/20 text-slate-200 space-y-2"
-                            >
-                              <div className="flex items-center justify-between">
-                                <span className="text-emerald-300 font-bold text-xs">
-                                  {rec.title}
-                                </span>
-                                <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                                  Priority {rec.priority}
-                                </span>
-                              </div>
-                              <p className="text-slate-300 text-xs leading-relaxed">
-                                {rec.action}
-                              </p>
-                              {rec.replacement_algorithm?.value?.canonical_name && (
-                                <div className="text-[11px] text-slate-400 pt-1">
-                                  NIST Target:{" "}
-                                  <strong className="text-emerald-400">
-                                    {rec.replacement_algorithm.value.canonical_name}
-                                  </strong>
-                                </div>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                  </div>
-                ) : (
-                  <div className="py-20 text-center text-slate-500 font-mono text-xs">
-                    Finding details could not be loaded.
-                  </div>
-                )}
-              </div>
-
-              <div className="pt-6 border-t border-slate-800">
-                <button
-                  onClick={closeDrawer}
-                  className="w-full py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 text-xs font-mono font-medium transition-colors"
-                >
-                  Close Evidence Drawer
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* --- Guided 4-Step Scan Modal --- */}
-      {isScanModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div
-            onClick={() => setIsScanModalOpen(false)}
-            className="absolute inset-0 bg-black/80 backdrop-blur-md"
-          />
-
-          <div className="relative w-full max-w-xl rounded-2xl border border-slate-800 bg-slate-950 p-6 md:p-8 shadow-2xl space-y-6">
-            {/* Modal Header */}
-            <div className="flex items-center justify-between pb-4 border-b border-slate-800">
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-xl bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
-                  <Sparkles className="h-5 w-5" />
-                </div>
-                <div>
-                  <h3 className="text-base font-bold text-white font-mono">
-                    New Cryptographic Scan
-                  </h3>
-                  <p className="text-xs text-slate-400">
-                    Step {scanStep} of 4 &bull; Guided Inventory &amp; Mosca Horizon Setup
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={() => setIsScanModalOpen(false)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-white"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            {/* Step 1: Target Type */}
-            {scanStep === 1 && (
-              <div className="space-y-4">
-                <label className="text-xs font-mono font-semibold uppercase text-slate-400 block">
-                  Select Target Architecture
-                </label>
-                <div className="grid grid-cols-3 gap-3">
-                  {[
-                    { id: "source_repo", label: "Source Repo", icon: FolderGit2 },
-                    { id: "container_image", label: "Container", icon: Box },
-                    { id: "binary", label: "Binary ELF/PE", icon: Binary },
-                  ].map((t) => {
-                    const Icon = t.icon;
-                    const active = scanForm.target_type === t.id;
-                    return (
-                      <button
-                        key={t.id}
-                        type="button"
-                        onClick={() =>
-                          setScanForm({ ...scanForm, target_type: t.id })
-                        }
-                        className={`p-4 rounded-xl border flex flex-col items-center justify-center gap-2 transition-all ${
-                          active
-                            ? "bg-cyan-500/10 border-cyan-500 text-cyan-300 ring-1 ring-cyan-500"
-                            : "bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700"
-                        }`}
-                      >
-                        <Icon className="h-6 w-6" />
-                        <span className="text-xs font-mono font-medium">{t.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            {/* Step 2: Target Details */}
-            {scanStep === 2 && (
-              <div className="space-y-4">
-                <div className="space-y-1.5">
-                  <label className="text-xs font-mono font-semibold uppercase text-slate-400">
-                    Repository URL or Target Locator
-                  </label>
-                  <input
-                    type="text"
-                    value={scanForm.repository}
-                    onChange={(e) =>
-                      setScanForm({ ...scanForm, repository: e.target.value })
-                    }
-                    placeholder="https://github.com/org/payments-core"
-                    className="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-200 text-xs font-mono focus:ring-2 focus:ring-cyan-500/50 focus:outline-none"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-xs font-mono font-semibold uppercase text-slate-400">
-                    Branch / Version Tag
-                  </label>
-                  <input
-                    type="text"
-                    value={scanForm.branch}
-                    onChange={(e) =>
-                      setScanForm({ ...scanForm, branch: e.target.value })
-                    }
-                    placeholder="main"
-                    className="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-200 text-xs font-mono focus:ring-2 focus:ring-cyan-500/50 focus:outline-none"
-                  />
-                </div>
-              </div>
-            )}
-
-            {/* Step 3: Business Context & Mosca Horizon */}
-            {scanStep === 3 && (
-              <div className="space-y-4 text-xs font-mono">
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1.5">
-                    <label className="text-slate-400 uppercase text-[10px] block">
-                      Environment
-                    </label>
-                    <select
-                      value={scanForm.environment}
-                      onChange={(e) =>
-                        setScanForm({ ...scanForm, environment: e.target.value })
-                      }
-                      className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-200 focus:outline-none"
-                    >
-                      <option value="production">Production</option>
-                      <option value="staging">Staging</option>
-                      <option value="development">Development</option>
-                    </select>
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-slate-400 uppercase text-[10px] block">
-                      Criticality
-                    </label>
-                    <select
-                      value={scanForm.business_criticality}
-                      onChange={(e) =>
-                        setScanForm({
-                          ...scanForm,
-                          business_criticality: e.target.value,
-                        })
-                      }
-                      className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-200 focus:outline-none"
-                    >
-                      <option value="critical">Critical</option>
-                      <option value="high">High</option>
-                      <option value="medium">Medium</option>
-                      <option value="low">Low</option>
-                    </select>
-                  </div>
-                </div>
-
-                {/* Mosca Parameters Slider/Inputs */}
-                <div className="p-4 rounded-xl border border-slate-800 bg-slate-900/60 space-y-3">
-                  <span className="text-cyan-400 text-[11px] font-bold block uppercase">
-                    Mosca Quantum Horizon Parameters (Years)
-                  </span>
-
-                  <div className="grid grid-cols-3 gap-3">
-                    <div>
-                      <span className="text-[10px] text-slate-400 block">X (Data Life)</span>
-                      <input
-                        type="number"
-                        step="0.5"
-                        value={scanForm.data_lifetime}
-                        onChange={(e) =>
-                          setScanForm({
-                            ...scanForm,
-                            data_lifetime: parseFloat(e.target.value) || 0,
-                          })
-                        }
-                        className="w-full mt-1 px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-white font-bold"
-                      />
-                    </div>
-                    <div>
-                      <span className="text-[10px] text-slate-400 block">Y (Migration)</span>
-                      <input
-                        type="number"
-                        step="0.5"
-                        value={scanForm.migration_time}
-                        onChange={(e) =>
-                          setScanForm({
-                            ...scanForm,
-                            migration_time: parseFloat(e.target.value) || 0,
-                          })
-                        }
-                        className="w-full mt-1 px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-white font-bold"
-                      />
-                    </div>
-                    <div>
-                      <span className="text-[10px] text-slate-400 block">Z (CRQC Time)</span>
-                      <input
-                        type="number"
-                        step="0.5"
-                        value={scanForm.crqc_horizon}
-                        onChange={(e) =>
-                          setScanForm({
-                            ...scanForm,
-                            crqc_horizon: parseFloat(e.target.value) || 0,
-                          })
-                        }
-                        className="w-full mt-1 px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-white font-bold"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Immediate Mosca Check Preview */}
-                  <div className="pt-2 text-[10px] text-slate-400">
-                    {scanForm.data_lifetime + scanForm.migration_time >
-                    scanForm.crqc_horizon ? (
-                      <span className="text-rose-400 font-bold">
-                        &bull; Warning: X + Y (
-                        {scanForm.data_lifetime + scanForm.migration_time} yrs) exceeds Z (
-                        {scanForm.crqc_horizon} yrs). Harvest-Now attack risk!
-                      </span>
-                    ) : (
-                      <span className="text-emerald-400">
-                        &bull; X + Y ({scanForm.data_lifetime + scanForm.migration_time} yrs) is
-                        within safe horizon Z ({scanForm.crqc_horizon} yrs).
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Step 4: Review & Start */}
-            {scanStep === 4 && (
-              <div className="space-y-4 text-xs font-mono">
-                <div className="p-4 rounded-xl border border-slate-800 bg-slate-900/60 space-y-2">
-                  <h4 className="text-slate-400 text-[11px] font-bold uppercase">
-                    Scan Specification Summary
-                  </h4>
-                  <div className="grid grid-cols-2 gap-2 text-slate-300">
-                    <div>
-                      Target Type:{" "}
-                      <strong className="text-white uppercase">{scanForm.target_type}</strong>
-                    </div>
-                    <div>
-                      Environment:{" "}
-                      <strong className="text-white uppercase">{scanForm.environment}</strong>
-                    </div>
-                    <div>
-                      Criticality:{" "}
-                      <strong className="text-white uppercase">
-                        {scanForm.business_criticality}
-                      </strong>
-                    </div>
-                    <div>
-                      Mosca Horizon:{" "}
-                      <strong className="text-cyan-400">
-                        X={scanForm.data_lifetime}y, Y={scanForm.migration_time}y, Z=
-                        {scanForm.crqc_horizon}y
-                      </strong>
-                    </div>
-                  </div>
-                  <div className="pt-2 text-slate-400 text-[11px] truncate">
-                    Locator: <span className="text-cyan-300">{scanForm.repository}</span>
-                  </div>
-                </div>
-
-                {scanSuccessMessage && (
-                  <div className="p-3 rounded-xl bg-emerald-950/40 border border-emerald-500/30 text-emerald-300 flex items-center gap-2">
-                    <CheckCircle2 className="h-4 w-4 text-emerald-400" />
-                    <span>{scanSuccessMessage}</span>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Modal Actions */}
-            <div className="flex items-center justify-between pt-4 border-t border-slate-800">
-              {scanStep > 1 ? (
-                <button
-                  type="button"
-                  onClick={() => setScanStep(scanStep - 1)}
-                  className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs font-mono"
-                >
-                  Back
-                </button>
-              ) : (
-                <div />
-              )}
-
-              {scanStep < 4 ? (
-                <button
-                  type="button"
-                  onClick={() => setScanStep(scanStep + 1)}
-                  className="px-5 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-mono text-xs font-semibold"
-                >
-                  Next Step
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  disabled={scanSubmitting}
-                  onClick={handleStartScan}
-                  className="px-5 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-mono text-xs font-bold shadow-lg shadow-cyan-500/25 disabled:opacity-50 flex items-center gap-2"
-                >
-                  {scanSubmitting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                  Execute Cryptographic Scan
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      <ScanWorkflow
+        open={isScanModalOpen}
+        onClose={() => setIsScanModalOpen(false)}
+        form={scanForm}
+        setForm={setScanForm}
+        onSubmit={handleStartScan}
+        submitting={scanSubmitting}
+        successMessage={scanSuccessMessage}
+      />
     </div>
   );
 }
