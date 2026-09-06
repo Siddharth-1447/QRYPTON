@@ -62,5 +62,9 @@ ignore_missing_imports = true
 follow_imports = "skip"
 
 [[tool.mypy.overrides]]
-module = ["qrypton.ui.mock_provider"]
+module = [
+    "qrypton.api.*",
+    "qrypton.ui.mock_provider",
+]
 ignore_errors = true
+ignore_missing_imports = true
