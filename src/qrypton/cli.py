@@ -49,6 +49,10 @@ def _parser() -> argparse.ArgumentParser:
     scan.add_argument("--allow-partial", action="store_true")
     scan.add_argument("--allow-scanner-failure", action="store_true")
     scan.add_argument("--max-concurrency", type=int, default=None)
+    scan.add_argument(
+        "--reference-time",
+        help="UTC ISO-8601 timestamp used for deterministic policy and CBOM timestamps",
+    )
     scan.add_argument("--format", choices=("json", "text"), default="json")
     scan.add_argument("--quiet", action="store_true")
     report = commands.add_parser("report")
@@ -105,7 +109,13 @@ def _scan(args: argparse.Namespace) -> int:
     database_path = Path(str(_setting(args, "db", file_config, "qrypton.sqlite3")))
     max_concurrency = int(str(_setting(args, "max_concurrency", file_config, 1)))
     max_risk = RiskLevel(str(_setting(args, "max_risk", file_config, "medium")))
-    now = datetime.now(UTC)
+    if args.reference_time:
+        parsed_time = datetime.fromisoformat(args.reference_time)
+        if parsed_time.tzinfo is None:
+            raise ValueError("reference time must include a timezone")
+        now = parsed_time.astimezone(UTC)
+    else:
+        now = datetime.now(UTC)
     deriver = HmacIdDeriver(secret.encode())
     config_bytes = canonical_json_bytes({"root": str(target_path.parent)})
     digest = f"sha256:{hashlib.sha256(config_bytes).hexdigest()}"
