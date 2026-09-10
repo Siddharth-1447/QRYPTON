@@ -1,0 +1,59 @@
+name: QRYPTON baseline refresh
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    env:
+      QRYPTON_ID_SECRET: ${{ secrets.QRYPTON_ID_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - run: pip install .
+      - name: Generate baseline scan
+        run: |-
+          mkdir -p .qrypton
+          qrypton scan . \
+            --tenant-id '${{ vars.QRYPTON_TENANT_ID }}' \
+            --asset-kind repository \
+            --asset-reference '${{ github.repository }}' \
+            --asset-name '${{ github.event.repository.name }}' \
+            --id-secret-env QRYPTON_ID_SECRET \
+            --db qrypton-baseline.sqlite3 \
+            --output .qrypton/scan.cbom.json \
+            --quiet
+      - name: Build baseline CI artifact
+        run: |-
+          qrypton ci scan . \
+            --tenant-id '${{ vars.QRYPTON_TENANT_ID }}' \
+            --asset-kind repository \
+            --asset-reference '${{ github.repository }}' \
+            --asset-name '${{ github.event.repository.name }}' \
+            --id-secret-env QRYPTON_ID_SECRET \
+            --baseline .qrypton/baseline.ci.json \
+            --db qrypton-baseline.sqlite3 \
+            --cbom-output .qrypton/baseline.cbom.json \
+            --ci-output .qrypton/baseline.ci.json \
+            --max-risk critical \
+            --allow-scanner-failure \
+            --quiet \
+            || true
+      - name: Commit updated baseline
+        run: |
+          git config user.name "qrypton[bot]"
+          git config user.email "qrypton[bot]@users.noreply.github.com"
+          git add .qrypton/baseline.ci.json .qrypton/baseline.cbom.json
+          git diff --cached --quiet || git commit -m "chore: update QRYPTON cryptographic baseline"
+          git push

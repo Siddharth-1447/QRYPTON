@@ -6,8 +6,8 @@ const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "QRYPTON | Enterprise Cryptographic Security",
-  description: "Enterprise cryptographic inventory, risk posture, and post-quantum migration planning.",
+  title: "QRYPTON | Discover. assess. evolve.",
+  description: "A cinematic command centre for cryptographic discovery and post-quantum readiness.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

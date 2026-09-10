@@ -1,0 +1,34 @@
+{
+  "schema_version": "1.0",
+  "tenant_id": "tenant_demo_enterprise_001",
+  "run_id": "run_baseline_000000000001",
+  "asset_id": "asset_demo_enterprise_001",
+  "target_id": "target_demo_enterprise_001",
+  "created_at": "2026-09-01T00:00:00Z",
+  "status": "completed",
+  "policy_outcome": {
+    "passed": true,
+    "max_risk_level": "medium",
+    "max_allowed_risk": "high"
+  },
+  "introduced": [],
+  "worsened": [],
+  "resolved": [],
+  "unchanged": [],
+  "findings_summary": {
+    "total": 0,
+    "by_risk": {
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "low": 0,
+      "informational": 0,
+      "unknown": 0
+    }
+  },
+  "assessments_summary": {
+    "total": 0
+  },
+  "exit_code": 0,
+  "exit_reason": "success"
+}

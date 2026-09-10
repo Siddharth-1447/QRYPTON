@@ -8,7 +8,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
-from qrypton.contracts.enums import ObservationState, RiskLevel
+from qrypton.contracts.enums import Criticality, ObservationState, RiskLevel
 from qrypton.contracts.ids import IdDeriver, canonical_json_bytes
 from qrypton.contracts.models import (
     BusinessContext,
@@ -137,6 +137,32 @@ class MoscaRiskEngine:
     ) -> RiskAssessment:
         evaluation = self.calculator.evaluate_finding(finding, self.parameters)
         finding_provenance = finding.provenance
+        business_score = 0.0
+        business_impact = Observation[float](state=ObservationState.UNKNOWN)
+        if business_context is not None:
+            criticality = business_context.criticality.value
+            business_score = {
+                Criticality.CRITICAL: 90.0,
+                Criticality.HIGH: 75.0,
+                Criticality.MEDIUM: 55.0,
+                Criticality.LOW: 30.0,
+                Criticality.UNKNOWN: 0.0,
+            }[criticality]
+            if business_context.internet_exposed.value:
+                business_score = min(100.0, business_score + 10.0)
+            business_impact = Observation[float](
+                state=ObservationState.OBSERVED,
+                value=business_score,
+                basis_evidence_ids=finding.evidence_ids,
+                rationale="Business criticality and internet exposure weighting.",
+            )
+        combined_score = max(evaluation.exposure_score, business_score)
+        combined_level = (
+            RiskLevel.CRITICAL if combined_score >= 90 else
+            RiskLevel.HIGH if combined_score >= 75 else
+            RiskLevel.MEDIUM if combined_score >= 50 else
+            RiskLevel.LOW
+        )
         assessment_id = self.id_deriver.derive(
             namespace="risk",
             tenant_id=finding.tenant_id,
@@ -151,7 +177,7 @@ class MoscaRiskEngine:
         )
         score = Observation[float](
             state=ObservationState.OBSERVED,
-            value=evaluation.exposure_score,
+            value=combined_score,
             basis_evidence_ids=finding.evidence_ids,
             rationale="Mosca exposure score derived from X + Y relative to Z.",
         )
@@ -162,12 +188,16 @@ class MoscaRiskEngine:
             finding_id=finding.id,
             business_context_id=business_context.id if business_context else None,
             score=score,
-            level=RiskLevel(evaluation.urgency),
+            level=combined_level,
             factors=RiskFactors(
                 cryptographic_obsolescence=unknown,
-                quantum_exposure=score,
+                quantum_exposure=Observation[float](
+                    state=ObservationState.OBSERVED,
+                    value=evaluation.exposure_score,
+                    basis_evidence_ids=finding.evidence_ids,
+                ),
                 exploitability=unknown,
-                business_impact=unknown,
+                business_impact=business_impact,
                 evidence_confidence=finding.confidence,
                 policy_profile_id=policy.profile_id,
                 policy_profile_version=policy.profile_version,

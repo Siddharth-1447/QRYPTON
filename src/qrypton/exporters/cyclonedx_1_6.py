@@ -17,9 +17,11 @@ from qrypton.contracts.errors import CBOMExportError, CBOMValidationError
 from qrypton.contracts.models import (
     Algorithm,
     Asset,
+    BusinessContext,
     CryptoFinding,
     DomainModel,
     Evidence,
+    PersistedMoscaEvaluation,
     Recommendation,
     RiskAssessment,
 )
@@ -31,9 +33,13 @@ _SCHEMA_FILE = Path(__file__).parent / "schemas" / "cyclonedx" / "bom-1.6.schema
 _SCHEMA_MANIFEST = _SCHEMA_FILE.with_name("MANIFEST.json")
 _ROOT_TYPES: Mapping[AssetKind, str] = {
     AssetKind.APPLICATION: "application",
+    AssetKind.SERVICE: "application",
+    AssetKind.HOST: "application",
+    AssetKind.REPOSITORY: "application",
     AssetKind.LIBRARY: "library",
     AssetKind.CONTAINER_IMAGE: "container",
     AssetKind.BINARY: "file",
+    AssetKind.OTHER: "application",
 }
 _PRIMITIVES: Mapping[AlgorithmFamily, str] = {
     AlgorithmFamily.SYMMETRIC_CIPHER: "block-cipher",
@@ -81,6 +87,8 @@ class CycloneDx16CbomExporter:
         recommendation_plans: Sequence[PqcRecommendationPlan],
         evidence: Sequence[Evidence],
         context: CbomExportContext,
+        business_context: BusinessContext | None = None,
+        mosca_evaluations: Sequence[PersistedMoscaEvaluation] = (),
     ) -> bytes:
         root_type = _ROOT_TYPES.get(asset.kind)
         if root_type is None:
@@ -91,8 +99,9 @@ class CycloneDx16CbomExporter:
         assessment_by_finding = self._index_unique(assessments, "finding_id")
         recommendation_by_finding = self._group_recommendations(recommendations)
         plan_by_finding = self._index_unique(recommendation_plans, "finding_id")
+        mosca_by_finding = self._index_unique(mosca_evaluations, "finding_id")
         root_ref = f"qrypton:asset:{asset.id}"
-        components = [self._root_component(asset, root_ref, root_type)]
+        components = [self._root_component(asset, root_ref, root_type, business_context)]
         dependencies: list[JsonObject] = []
         for finding in sorted(findings, key=lambda item: item.id):
             component = self._finding_component(
@@ -101,6 +110,7 @@ class CycloneDx16CbomExporter:
                 recommendation_by_finding.get(finding.id, ()),
                 plan_by_finding.get(finding.id),
                 evidence_by_id,
+                mosca_by_finding.get(finding.id),
             )
             components.append(component)
             dependencies.append({"ref": root_ref, "dependsOn": [component["bom-ref"]]})
@@ -142,7 +152,13 @@ class CycloneDx16CbomExporter:
                 f"CycloneDX 1.6 validation failed at {path}: {validation_error.message}"
             )
 
-    def _root_component(self, asset: Asset, bom_ref: str, component_type: str) -> JsonObject:
+    def _root_component(
+        self,
+        asset: Asset,
+        bom_ref: str,
+        component_type: str,
+        business_context: BusinessContext | None = None,
+    ) -> JsonObject:
         properties = [
             self._property("org.qrypton.asset.id", asset.id),
             self._property("org.qrypton.asset.kind", asset.kind.value),
@@ -152,12 +168,61 @@ class CycloneDx16CbomExporter:
             properties.append(
                 self._property("org.qrypton.asset.external-reference", asset.external_reference)
             )
+        for tag in asset.tags:
+            properties.append(self._property("org.qrypton.asset.tag", tag))
+        if business_context is not None:
+            properties.extend(self._business_properties(business_context))
         return {
             "type": component_type,
             "bom-ref": bom_ref,
             "name": asset.name,
             "properties": self._properties(properties),
         }
+
+    @staticmethod
+    def _business_properties(business_context: BusinessContext) -> list[JsonObject]:
+        """Target-independent business context retained on the CBOM root asset."""
+        properties: list[JsonObject] = []
+        observed = (
+            ("org.qrypton.business.criticality", business_context.criticality),
+            ("org.qrypton.business.data-classification", business_context.data_classification),
+            ("org.qrypton.business.internet-exposed", business_context.internet_exposed),
+            ("org.qrypton.business.owner", business_context.owner_reference),
+        )
+        for name, observation in observed:
+            if (
+                observation.state is ObservationState.OBSERVED
+                and observation.value is not None
+            ):
+                value = observation.value
+                # StrEnum members serialize as strings; other enums expose .value.
+                if not isinstance(value, (str, bool, int, float)) and hasattr(value, "value"):
+                    value = value.value
+                properties.append(CycloneDx16CbomExporter._property(name, value))
+        if business_context.regulatory_scopes:
+            properties.append(
+                CycloneDx16CbomExporter._property(
+                    "org.qrypton.business.regulatory-scopes",
+                    sorted(set(business_context.regulatory_scopes)),
+                )
+            )
+        return properties
+
+    @staticmethod
+    def _mosca_property(evaluation: PersistedMoscaEvaluation) -> JsonObject:
+        """Mosca timeline urgency retained per finding (data lifetime X, effort Y, horizon Z)."""
+        return CycloneDx16CbomExporter._property(
+            "org.qrypton.mosca",
+            {
+                "x_data_lifetime_years": evaluation.x_data_lifetime_years,
+                "y_migration_years": evaluation.y_migration_years,
+                "z_crqc_horizon_years": evaluation.z_crqc_horizon_years,
+                "required_security_years": evaluation.required_security_years,
+                "time_margin_years": evaluation.time_margin_years,
+                "exposure_score": evaluation.exposure_score,
+                "urgency": evaluation.urgency,
+            },
+        )
 
     def _finding_component(
         self,
@@ -166,6 +231,7 @@ class CycloneDx16CbomExporter:
         recommendations: Sequence[Recommendation],
         plan: PqcRecommendationPlan | None,
         evidence: Mapping[str, Evidence],
+        mosca: PersistedMoscaEvaluation | None = None,
     ) -> JsonObject:
         bom_ref = f"qrypton:crypto:{finding.id}"
         component: JsonObject = {
@@ -247,6 +313,8 @@ class CycloneDx16CbomExporter:
                     self._property("org.qrypton.pqc.plan", plan.model_dump(mode="json")),
                 )
             )
+        if mosca is not None:
+            properties.append(self._mosca_property(mosca))
         for evidence_id in sorted(set(finding.evidence_ids)):
             item = evidence.get(evidence_id)
             if item is not None:

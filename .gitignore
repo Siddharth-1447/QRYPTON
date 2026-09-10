@@ -10,3 +10,8 @@ env/
 *.exe
 .DS_Store
 qrypton.db*
+
+qrypton.db
+qrypton.sqlite3
+artifacts/
+

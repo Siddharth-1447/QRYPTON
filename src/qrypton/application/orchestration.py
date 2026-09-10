@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
+import traceback
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Protocol, cast
@@ -44,6 +46,16 @@ class Clock(Protocol):
 
 class FindingCapableNormalizer(EvidenceNormalizer, FindingNormalizer, Protocol):
     pass
+
+
+# Target-specific scanners emit the shared static-observation shape, so they
+# reuse the source normalizer. Scanner selection still records the original
+# target type (library/container/kms) for the run.
+_NORMALIZER_ALIASES: dict[str, str] = {
+    "qrypton-library": "source",
+    "qrypton-container": "source",
+    "qrypton-kms": "source",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +123,9 @@ class QryptonOrchestrator:
                 status=RunStatus.FAILED,
                 started_at=started_at,
                 completed_at=self._services.clock.now(),
+                asset=request.asset,
+                target=request.target,
+                business_context=request.business_context,
                 scanner_results=scanner_results,
                 failures=failures,
                 policy_outcome=PolicyOutcome(passed=False, violations=("all_scanners_failed",)),
@@ -157,18 +172,44 @@ class QryptonOrchestrator:
             context = CbomExportContext(
                 serial_number=uuid5(NAMESPACE_URL, run_id), generated_at=request.reference_time
             )
-            cbom = self._services.cbom_exporter.export(
-                asset=request.asset,
-                findings=findings,
-                assessments=assessments,
-                recommendations=recommendations,
-                recommendation_plans=plans,
-                evidence=evidence,
-                context=context,
+            export_args = {
+                "asset": request.asset,
+                "findings": findings,
+                "assessments": assessments,
+                "recommendations": recommendations,
+                "recommendation_plans": plans,
+                "evidence": evidence,
+                "context": context,
+                "business_context": request.business_context,
+                "mosca_evaluations": mosca_evaluations,
+            }
+            last_error: Exception | None = None
+            for attempt in range(2):
+                try:
+                    cbom = self._services.cbom_exporter.export(**export_args)
+                    last_error = None
+                    break
+                except Exception as error:
+                    last_error = error
+                    logging.warning(f"CBOM export attempt {attempt + 1} failed: {error}")
+            if last_error is not None:
+                raise last_error
+        except Exception as cbom_error:
+            error_trace = traceback.format_exc()
+            logging.error(f"CBOM generation failed for run {run_id}: {cbom_error}\n{error_trace}")
+            self._services.logger.event(
+                "cbom_export_failed",
+                fields={
+                    "run_id": run_id,
+                    "tenant_id": request.tenant_id,
+                    "stage": "export",
+                    "error_code": "cbom_export_failed",
+                    "error_message": str(cbom_error),
+                },
             )
-        except Exception:
             failures += (self._failure("export", "cbom_export_failed"),)
             status = RunStatus.PARTIAL
+            # Ensure we always proceed to finalize the run even if CBOM fails
         outcome = self._policy_outcome(request, status, scanner_results, assessments)
         result = RunResult(
             run_id=run_id,
@@ -176,6 +217,9 @@ class QryptonOrchestrator:
             status=status,
             started_at=started_at,
             completed_at=self._services.clock.now(),
+            asset=request.asset,
+            target=request.target,
+            business_context=request.business_context,
             scanner_results=scanner_results,
             failures=tuple(sorted(failures, key=lambda item: (item.stage, item.error_code))),
             evidence=tuple(
@@ -290,7 +334,13 @@ class QryptonOrchestrator:
             return result, evidence, findings
 
     def _normalizer_for(self, scanner: ScannerPlugin) -> FindingCapableNormalizer:
-        token = scanner.name.removeprefix("qrypton-")
+        # Target-specific scanners share the source observation shape, so they
+        # normalize through the source normalizer. The alias keeps the original
+        # target type (library/container/kms) visible in scanner selection while
+        # reusing the compatible normalizer.
+        token = _NORMALIZER_ALIASES.get(
+            scanner.name, scanner.name.removeprefix("qrypton-")
+        )
         matches = [item for item in self._services.evidence_normalizers if token in item.name]
         if not matches:
             raise ValueError("no compatible normalizer")
@@ -321,17 +371,31 @@ class QryptonOrchestrator:
                 assessments.append(assessment)
                 persistable = getattr(self._services.risk_engine, "persistable_evaluation", None)
                 if persistable is not None:
-                    mosca_evaluations.append(persistable(finding))
+                    try:
+                        mosca_evaluations.append(persistable(finding))
+                    except Exception as mosca_error:
+                        logging.warning(f"Mosca evaluation failed for finding {finding.id}: {mosca_error}")
+                        failures.append(self._failure("risk", "mosca_evaluation_failed"))
                 engine = self._services.recommendation_engine
                 if hasattr(engine, "plan"):
-                    planned = engine.plan(finding, assessment, request.recommendation_policy)
-                    recommendations.extend(planned.recommendations)
-                    plans.append(planned.plan)
+                    try:
+                        planned = engine.plan(finding, assessment, request.recommendation_policy)
+                        recommendations.extend(planned.recommendations)
+                        plans.append(planned.plan)
+                    except Exception as rec_error:
+                        logging.warning(f"Recommendation planning failed for finding {finding.id}: {rec_error}")
+                        failures.append(self._failure("recommendation", "recommendation_planning_failed"))
                 else:
-                    recommendations.extend(
-                        engine.recommend(finding, assessment, request.recommendation_policy)
-                    )
-            except Exception:
+                    try:
+                        recommendations.extend(
+                            engine.recommend(finding, assessment, request.recommendation_policy)
+                        )
+                    except Exception as rec_error:
+                        logging.warning(f"Recommendation failed for finding {finding.id}: {rec_error}")
+                        failures.append(self._failure("recommendation", "recommendation_failed"))
+            except Exception as risk_error:
+                error_trace = traceback.format_exc()
+                logging.error(f"Risk assessment failed for finding {finding.id}: {risk_error}\n{error_trace}")
                 failures.append(self._failure("risk", "finding_processing_failed"))
         return (
             tuple(sorted(assessments, key=lambda item: item.id)),
@@ -340,6 +404,10 @@ class QryptonOrchestrator:
             tuple(sorted(mosca_evaluations, key=lambda item: item.finding_id)),
             tuple(failures),
         )
+
+    def run_id_for(self, request: RunRequest) -> str:
+        """Return the stable ID used by asynchronous API submission and polling."""
+        return self._run_id(request)
 
     def _run_id(self, request: RunRequest) -> str:
         scanners = tuple(
@@ -439,6 +507,9 @@ class QryptonOrchestrator:
             status=RunStatus.FAILED,
             started_at=started_at,
             completed_at=self._services.clock.now(),
+            asset=request.asset,
+            target=request.target,
+            business_context=request.business_context,
             failures=(self._failure(stage, code),),
             policy_outcome=PolicyOutcome(passed=False, violations=(code,)),
         )
@@ -461,6 +532,9 @@ class QryptonOrchestrator:
             status=RunStatus.PARTIAL,
             started_at=started_at,
             completed_at=self._services.clock.now(),
+            asset=request.asset,
+            target=request.target,
+            business_context=request.business_context,
             scanner_results=scanners,
             failures=failures,
             evidence=evidence,

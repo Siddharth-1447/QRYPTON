@@ -65,3 +65,32 @@ def test_scan_persists_and_reports_a_deterministic_cbom(
         assert evaluation.required_security_years == (
             evaluation.x_data_lifetime_years + evaluation.y_migration_years
         )
+
+
+def test_ci_scan_emits_sanitized_delta_and_artifacts(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    source = tmp_path / "project"
+    source.mkdir()
+    (source / "main.py").write_text("import hashlib\nhashlib.sha1(b'x')\n", encoding="utf-8")
+    secret_name = "QRYPTON_TEST_CI_ID_SECRET"
+    monkeypatch.setenv(secret_name, "b" * 32)  # type: ignore[attr-defined]
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text('{"schema_version":"1.0","inventory":{}}', encoding="utf-8")
+    cbom = tmp_path / "scan.cdx.json"
+    output = tmp_path / "ci.json"
+    result = main(
+        [
+            "ci", "scan", str(source), "--tenant-id", f"tenant_{'b' * 52}",
+            "--asset-kind", "application", "--asset-reference", "ci-integration",
+            "--asset-name", "CI integration", "--id-secret-env", secret_name,
+            "--baseline", str(baseline), "--db", str(tmp_path / "runs.sqlite3"),
+            "--cbom-output", str(cbom), "--ci-output", str(output), "--max-risk", "critical",
+        ]
+    )
+    assert result == 0
+    document = json.loads(output.read_text(encoding="utf-8"))
+    assert document["schema_version"] == "1.0"
+    assert document["delta"]
+    assert "evidence" not in output.read_text(encoding="utf-8")
+    assert cbom.exists()

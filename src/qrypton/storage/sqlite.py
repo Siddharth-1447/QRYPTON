@@ -13,9 +13,10 @@ from qrypton.contracts.primitives import EntityId, TenantId
 class SqliteRunStore:
     def __init__(self, path: Path) -> None:
         self._path = path
-        self._connection = sqlite3.connect(path)
+        self._connection = sqlite3.connect(path, check_same_thread=False, timeout=30)
         self._connection.execute("PRAGMA foreign_keys = ON")
-        self._connection.execute("PRAGMA journal_mode = WAL")
+        self._connection.execute("PRAGMA journal_mode = DELETE")
+        self._connection.execute("PRAGMA busy_timeout = 30000")
         self._connection.executescript("""
             CREATE TABLE IF NOT EXISTS qrypton_schema_version (version INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS qrypton_runs (
@@ -27,6 +28,8 @@ class SqliteRunStore:
                 result_json TEXT NOT NULL, PRIMARY KEY (tenant_id, run_id, scanner_name),
                 FOREIGN KEY (tenant_id, run_id) REFERENCES qrypton_runs (tenant_id, run_id)
             );
+            CREATE INDEX IF NOT EXISTS idx_qrypton_runs_tenant_status
+                ON qrypton_runs(tenant_id, status);
         """)
         if (
             self._connection.execute("SELECT COUNT(*) FROM qrypton_schema_version").fetchone()[0]
@@ -86,16 +89,32 @@ class SqliteRunStore:
 
     def get_run(self, *, tenant_id: TenantId, run_id: EntityId) -> RunResult | None:
         row = self._connection.execute(
-            "SELECT result_json FROM qrypton_runs WHERE tenant_id=? AND run_id=?",
+            "SELECT result_json, cbom FROM qrypton_runs WHERE tenant_id=? AND run_id=?",
             (tenant_id, run_id),
         ).fetchone()
-        return RunResult.model_validate_json(row[0]) if row and row[0] else None
+        if not row or not row[0]:
+            return None
+        # The JSON document deliberately excludes the potentially large CBOM;
+        # rehydrate it from its authoritative blob column after a DB reopen.
+        result = RunResult.model_validate_json(row[0])
+        return result.model_copy(update={"cbom": bytes(row[1]) if row[1] is not None else None})
 
     def get_cbom(self, *, tenant_id: TenantId, run_id: EntityId) -> bytes | None:
         row = self._connection.execute(
             "SELECT cbom FROM qrypton_runs WHERE tenant_id=? AND run_id=?", (tenant_id, run_id)
         ).fetchone()
         return bytes(row[0]) if row and row[0] is not None else None
+
+    def delete_run(self, *, tenant_id: TenantId, run_id: EntityId) -> bool:
+        """Delete one tenant-scoped historical run and its scanner records."""
+        self._connection.execute(
+            "DELETE FROM qrypton_scanner_results WHERE tenant_id=? AND run_id=?", (tenant_id, run_id)
+        )
+        cursor = self._connection.execute(
+            "DELETE FROM qrypton_runs WHERE tenant_id=? AND run_id=?", (tenant_id, run_id)
+        )
+        self._connection.commit()
+        return cursor.rowcount > 0
 
     def list_runs(
         self, *, tenant_id: TenantId | None = None
@@ -111,3 +130,8 @@ class SqliteRunStore:
                 (tenant_id,),
             ).fetchall()
         return tuple((str(r[0]), str(r[1]), str(r[2])) for r in rows)
+
+    def close(self) -> None:
+        if self._connection:
+            self._connection.close()
+            self._connection = None  # type: ignore

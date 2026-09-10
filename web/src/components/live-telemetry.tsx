@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import {
   Activity,
   Radio,
@@ -68,7 +68,7 @@ function formatTs(date: Date) {
 }
 
 export function LiveTelemetry() {
-  const [mounted, setMounted] = useState(false);
+  const [mounted] = useState(true);
   const [running, setRunning] = useState(true);
   const [rows, setRows] = useState<StreamRow[]>([]);
   const [keysScanned, setKeysScanned] = useState(48213);
@@ -81,53 +81,47 @@ export function LiveTelemetry() {
 
   const idRef = useRef(0);
 
-  useEffect(() => {
-    setMounted(true);
+  const tick = useCallback(() => {
+    const entry = CATALOG[Math.floor(Math.random() * CATALOG.length)];
+    const host = HOSTS[Math.floor(Math.random() * HOSTS.length)];
+    const now = new Date();
+    idRef.current += 1;
+
+    const row: StreamRow = {
+      id: idRef.current,
+      ts: formatTs(now),
+      host,
+      alg: entry.alg,
+      keyLabel: entry.keyLabel,
+      status: entry.status,
+    };
+
+    setTarget(host);
+    setRows((prev) => [row, ...prev].slice(0, 24));
+    setKeysScanned((prev) => prev + Math.floor(Math.random() * 7) + 3);
+    if (entry.status === "vulnerable") {
+      setViolations((prev) => prev + 1);
+    }
+    if (entry.status === "compliant" && entry.alg.startsWith("ML-")) {
+      setTunnels((prev) => prev + (Math.random() > 0.5 ? 1 : 0));
+    }
+    setThroughput((prev) => {
+      const nextVal = 20 + Math.floor(Math.random() * 80);
+      return [...prev.slice(1), nextVal];
+    });
   }, []);
 
   useEffect(() => {
     if (!running) return;
-
-    const tick = () => {
-      const entry = CATALOG[Math.floor(Math.random() * CATALOG.length)];
-      const host = HOSTS[Math.floor(Math.random() * HOSTS.length)];
-      const now = new Date();
-      idRef.current += 1;
-
-      const row: StreamRow = {
-        id: idRef.current,
-        ts: formatTs(now),
-        host,
-        alg: entry.alg,
-        keyLabel: entry.keyLabel,
-        status: entry.status,
-      };
-
-      setTarget(host);
-      setRows((prev) => [row, ...prev].slice(0, 24));
-      setKeysScanned((prev) => prev + Math.floor(Math.random() * 7) + 3);
-      if (entry.status === "vulnerable") {
-        setViolations((prev) => prev + 1);
-      }
-      if (entry.status === "compliant" && entry.alg.startsWith("ML-")) {
-        setTunnels((prev) => prev + (Math.random() > 0.5 ? 1 : 0));
-      }
-      setThroughput((prev) => {
-        const nextVal = 20 + Math.floor(Math.random() * 80);
-        return [...prev.slice(1), nextVal];
-      });
-    };
-
     tick();
     const interval = setInterval(tick, 1400);
     return () => clearInterval(interval);
-  }, [running]);
+  }, [running, tick]);
 
   return (
     <section id="live-scanner" aria-labelledby="live-scanner-heading" className="space-y-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="qrypton-kicker">Phase 7 · Real-time telemetry</p>
           <h2
             id="live-scanner-heading"
             className="mt-1 flex items-center gap-2 text-xl font-semibold tracking-tight"
@@ -188,6 +182,11 @@ export function LiveTelemetry() {
               {mounted ? `${(throughput[throughput.length - 1] * 4.2).toFixed(0)} handshakes/s` : "—"}
             </span>
           </div>
+          <p className="-mt-2 text-xs leading-5 text-muted-foreground">
+            This panel samples TLS handshakes to identify the negotiated algorithm, key strength,
+            and PQC readiness before the connection is relied on by a service. It provides a
+            live operational signal alongside the persisted artifact scan results.
+          </p>
 
           {/* Currently inspecting target */}
           <div className="flex items-center justify-between rounded-md border border-border bg-muted/40 px-4 py-3">
@@ -202,25 +201,21 @@ export function LiveTelemetry() {
             <span className="font-mono text-xs text-muted-foreground">TLS 1.3 · handshake</span>
           </div>
 
-          {/* Scan sweep over a throughput field */}
-          <div className="relative overflow-hidden rounded-md border border-border bg-muted/40 p-4">
-            {running && mounted && (
-              <div className="pointer-events-none absolute inset-y-0 left-0 w-1/4">
-                <div className="qrypton-scanline h-full w-16 bg-gradient-to-r from-transparent via-primary/25 to-transparent" />
-              </div>
-            )}
-            <div className="relative flex h-24 items-end gap-1">
-              {throughput.map((value, index) => (
-                <div
-                  key={index}
-                  className="flex-1 rounded-sm bg-primary/70 transition-[height] duration-500 ease-out"
+          {/* Clean enterprise throughput telemetry graph */}
+          <div className="relative rounded-md border border-border bg-card/50 p-4">
+            <div className="flex h-20 items-end gap-1">
+{throughput.map((value, index) => (
+                  <div
+                    key={`${value}-${index}`}
+                  className="flex-1 rounded-sm bg-emerald-500/30 border-t border-emerald-400/60 transition-all duration-300"
                   style={{ height: `${mounted ? value : 24}%` }}
                 />
               ))}
             </div>
-            <p className="mt-3 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
-              Packet cryptographic throughput · rolling window
-            </p>
+            <div className="mt-3 flex items-center justify-between font-mono text-[10px] uppercase text-muted-foreground border-t border-border/60 pt-2">
+              <span>Cryptographic Handshake Rate</span>
+              <span>Rolling telemetry window</span>
+            </div>
           </div>
         </div>
 
@@ -284,7 +279,7 @@ export function LiveTelemetry() {
                   const meta = STATUS_META[row.status];
                   return (
                     <tr
-                      key={row.id}
+                      key={`${row.id}-${index}`}
                       className={`text-foreground ${index === 0 ? "qrypton-rowin" : ""}`}
                     >
                       <td className="whitespace-nowrap px-5 py-2.5 text-muted-foreground">

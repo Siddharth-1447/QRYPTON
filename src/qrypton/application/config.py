@@ -21,6 +21,12 @@ from qrypton.recommendations.engine import PqcRecommendationEngine
 from qrypton.risk.mosca import MoscaParameters, MoscaRiskEngine
 from qrypton.scanners.binary.normalization import BinaryNormalizer
 from qrypton.scanners.binary.scanner import LocalBinaryScanner
+from qrypton.scanners.extended import (
+    CloudKmsScanner,
+    ContainerImageScanner,
+    ExtendedStaticScanner,
+    LibraryDependencyScanner,
+)
 from qrypton.scanners.source.normalization import SourceNormalizer
 from qrypton.scanners.source.policy import SourceScanPolicy
 from qrypton.scanners.source.scanner import LocalSourceScanner
@@ -56,7 +62,14 @@ def build_services(config: QryptonConfig) -> QryptonServices:
     )
     source = LocalSourceScanner(SourceScanPolicy(allowed_root=root))
     binary = LocalBinaryScanner(allowed_root=root)
-    scanners = cast(tuple[ScannerPlugin, ...], (source, binary))
+    extended = ExtendedStaticScanner(allowed_root=root)
+    library = LibraryDependencyScanner(allowed_root=root)
+    container = ContainerImageScanner(allowed_root=root)
+    kms = CloudKmsScanner(allowed_root=root)
+    scanners = cast(
+        tuple[ScannerPlugin, ...],
+        (source, binary, extended, library, container, kms),
+    )
     return QryptonServices(
         scanners=scanners,
         evidence_normalizers=(SourceNormalizer(), BinaryNormalizer()),

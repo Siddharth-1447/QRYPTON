@@ -20,6 +20,8 @@ from qrypton.application.config import (
     default_risk_policy,
 )
 from qrypton.application.schemas import PolicyGate, RunRequest
+from qrypton.ci import CI_SCHEMA_VERSION, build_ci_result, dump_ci_result
+from qrypton.ci.exit_codes import ExitCode
 from qrypton.contracts.enums import AssetKind, ObservationState, RiskLevel, ScanTargetKind
 from qrypton.contracts.ids import HmacIdDeriver, canonical_json_bytes
 from qrypton.contracts.models import Asset, Observation, Provenance, ScanTarget
@@ -60,6 +62,28 @@ def _parser() -> argparse.ArgumentParser:
     report.add_argument("--tenant-id", required=True)
     report.add_argument("--db", default=os.environ.get("QRYPTON_DB", "qrypton.sqlite3"))
     report.add_argument("--output", required=True)
+    ci = commands.add_parser("ci")
+    ci_scan = ci.add_subparsers(dest="ci_command", required=True).add_parser("scan")
+    ci_scan.add_argument("target")
+    ci_scan.add_argument("--tenant-id", required=True)
+    ci_scan.add_argument(
+        "--asset-kind", required=True, choices=[item.value for item in AssetKind]
+    )
+    ci_scan.add_argument("--asset-reference", required=True)
+    ci_scan.add_argument("--asset-name", required=True)
+    ci_scan.add_argument("--id-secret-env", required=True)
+    ci_scan.add_argument("--config")
+    ci_scan.add_argument("--db")
+    ci_scan.add_argument("--scanner", action="append", default=[])
+    ci_scan.add_argument("--max-risk", choices=[item.value for item in RiskLevel], default="high")
+    ci_scan.add_argument("--allow-partial", action="store_true")
+    ci_scan.add_argument("--allow-scanner-failure", action="store_true")
+    ci_scan.add_argument("--max-concurrency", type=int, default=None)
+    ci_scan.add_argument("--quiet", action="store_true")
+    ci_scan.add_argument("--baseline", required=True)
+    ci_scan.add_argument("--changed-from")
+    ci_scan.add_argument("--cbom-output", required=True)
+    ci_scan.add_argument("--ci-output", required=True)
     return parser
 
 
@@ -103,13 +127,14 @@ def _setting(
 def _scan(args: argparse.Namespace) -> int:
     secret = os.environ.get(args.id_secret_env)
     if secret is None or len(secret.encode()) < 32:
-        return 2
+        return ExitCode.INVOCATION_ERROR
     target_path = Path(args.target).resolve(strict=True)
     file_config = _file_config(args.config)
     database_path = Path(str(_setting(args, "db", file_config, "qrypton.sqlite3")))
     max_concurrency = int(str(_setting(args, "max_concurrency", file_config, 1)))
     max_risk = RiskLevel(str(_setting(args, "max_risk", file_config, "medium")))
-    if args.reference_time:
+    # `ci scan` shares this runner but its parser defines no --reference-time.
+    if getattr(args, "reference_time", None):
         parsed_time = datetime.fromisoformat(args.reference_time)
         if parsed_time.tzinfo is None:
             raise ValueError("reference time must include a timezone")
@@ -199,8 +224,75 @@ def _scan(args: argparse.Namespace) -> int:
             else "{status}: {findings} findings".format(**payload)
         )
     if result.status.value == "failed":
-        return 4
-    return 0 if result.policy_outcome.passed else 3
+        return ExitCode.SCANNER_FAILURE
+    return ExitCode.SUCCESS if result.policy_outcome.passed else ExitCode.POLICY_VIOLATION
+
+
+def _ci_scan(args: argparse.Namespace) -> int:
+    """Run a scan, then gate only introduced/worsened findings against a trusted baseline."""
+    try:
+        baseline_path = Path(args.baseline).resolve(strict=True)
+        baseline = json.loads(baseline_path.read_bytes())
+    except (OSError, json.JSONDecodeError):
+        return ExitCode.BASELINE_ERROR
+    if not isinstance(baseline, dict) or baseline.get("schema_version") != CI_SCHEMA_VERSION:
+        return ExitCode.BASELINE_ERROR
+    # CI owns artifact persistence so export failures are distinguishable from invocation errors.
+    args.output = None
+    args.format = "json"
+    _scan(args)
+    database_path = Path(args.db or os.environ.get("QRYPTON_DB", "qrypton.sqlite3"))
+    store = SqliteRunStore(database_path)
+    runs = store.list_runs(tenant_id=args.tenant_id)
+    if not runs:
+        return ExitCode.SCANNER_FAILURE
+    result = store.get_run(tenant_id=args.tenant_id, run_id=runs[0][1])
+    if result is None:
+        return ExitCode.SCANNER_FAILURE
+
+    # Determine exit code before building the result document.
+    scanner_failed = result.status.value == "failed" or any(
+        item.status == "failed" for item in result.scanner_results
+    )
+    if scanner_failed and not args.allow_scanner_failure:
+        exit_code = ExitCode.SCANNER_FAILURE
+    else:
+        exit_code = ExitCode.SUCCESS  # may be upgraded to POLICY_VIOLATION below
+
+    document = build_ci_result(
+        result, baseline, changed_from=args.changed_from, exit_code=exit_code,
+    )
+
+    # Check policy threshold against introduced findings.
+    if exit_code == ExitCode.SUCCESS:
+        threshold = {
+            RiskLevel.INFORMATIONAL: 0,
+            RiskLevel.LOW: 1,
+            RiskLevel.MEDIUM: 2,
+            RiskLevel.HIGH: 3,
+            RiskLevel.CRITICAL: 4,
+            RiskLevel.UNKNOWN: -1,
+        }
+        allowed = threshold[RiskLevel(args.max_risk)]
+        introduced = document["introduced"]
+        assert isinstance(introduced, list)
+        if any(
+            threshold.get(RiskLevel(str(item["risk_level"])), 5) > allowed
+            for item in introduced
+            if isinstance(item, dict)
+        ):
+            exit_code = ExitCode.POLICY_VIOLATION
+            document["exit_code"] = int(exit_code)
+            document["exit_reason"] = "policy_violation"
+
+    try:
+        Path(args.ci_output).write_bytes(dump_ci_result(document))
+        cbom = store.get_cbom(tenant_id=args.tenant_id, run_id=result.run_id)
+        if cbom is not None:
+            Path(args.cbom_output).write_bytes(cbom)
+    except OSError:
+        return ExitCode.ARTIFACT_ERROR
+    return exit_code
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -208,15 +300,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         args = _parser().parse_args(argv)
         if args.command == "scan":
             return _scan(args)
+        if args.command == "ci" and args.ci_command == "scan":
+            return _ci_scan(args)
         cbom = SqliteRunStore(Path(args.db)).get_cbom(tenant_id=args.tenant_id, run_id=args.run_id)
         if cbom is None:
-            return 5
+            return ExitCode.BASELINE_ERROR
         Path(args.output).write_bytes(cbom)
-        return 0
+        return ExitCode.SUCCESS
     except KeyboardInterrupt:
         return 130
     except (ValueError, OSError):
-        return 2
+        return ExitCode.INVOCATION_ERROR
 
 
 if __name__ == "__main__":

@@ -1,13 +1,15 @@
 "use client";
 
 import React, { useState, useEffect, useMemo, useCallback } from "react";
-import { AuthFlow } from "@/components/auth-flow";
-import { ScanWorkflow } from "@/components/scan-workflow";
+import { useRouter } from "next/navigation";
+import { ScanWorkflow, DEFAULT_SCAN_FORM, describeScanTarget, buildTargetSource, buildArtifactMetadata, type ScanForm } from "@/components/scan-workflow";
 import { CryptoInventory } from "@/components/crypto-inventory";
 import { FindingDetail } from "@/components/finding-detail";
 import { RiskPrioritization } from "@/components/risk-prioritization";
 import { LiveTelemetry } from "@/components/live-telemetry";
-import { Sidebar, NAV_SECTIONS } from "@/components/sidebar";
+import { ScanHistory, DEFAULT_SCANS, type ScanHistoryRecord } from "@/components/scan-history";
+import { Sidebar, NAV_SECTIONS, SIDEBAR_DEFAULT_WIDTH } from "@/components/sidebar";
+import { CryptoLockVisual } from "@/components/crypto-lock-visual";
 import {
   Shield,
   ShieldAlert,
@@ -20,13 +22,9 @@ import {
   CheckCircle2,
   Layers,
   ChevronRight,
-  Lock,
   X,
-  Filter,
-  Moon,
-  Sun,
-  RefreshCw,
-  Sparkles,
+  Plus,
+  ArrowDown,
 } from "lucide-react";
 
 // --- API Domain Types ---
@@ -151,31 +149,187 @@ interface FindingDetail {
 }
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+const RESULTS_SECTION_ID = "results-section";
+const TERMINAL_SUCCESS = new Set(["COMPLETED", "COMPLETE", "SUCCESS", "PARTIAL"]);
+const TERMINAL_FAILURE = new Set(["FAILED", "FAILURE", "ERROR"]);
+
+// --- Dynamic scan timeouts by target type ---
+export const SCAN_TIMEOUT_DEFAULT_MS = 15000; // Archives, Binaries, Manifests, KMS
+export const SCAN_TIMEOUT_MEDIUM_MS = 60000; // Source Repositories
+export const SCAN_TIMEOUT_EXTENDED_MS = 120000; // Container Images, Heavy Repos
+export const SCAN_POLL_INTERVAL_MS = 1500;
+
+const HEAVY_REPO_HINT = /(monorepo|heavy|large|enterprise|chromium|linux|kernel|opencv|tensorflow)/i;
+
+export function getScanTimeoutForTarget(targetType: string, repository?: string): number {
+  const normalized = String(targetType ?? "").trim().toLowerCase();
+  if (normalized === "container_image") return SCAN_TIMEOUT_EXTENDED_MS;
+  if (normalized === "source_repo") {
+    const repo = String(repository ?? "");
+    const isHeavy =
+      HEAVY_REPO_HINT.test(repo) || repo.length > 80 || (repo.match(/\//g) ?? []).length > 4;
+    return isHeavy ? SCAN_TIMEOUT_EXTENDED_MS : SCAN_TIMEOUT_MEDIUM_MS;
+  }
+  return SCAN_TIMEOUT_DEFAULT_MS;
+}
+
+export function getScanPhaseMessage(elapsedMs: number): string {
+  if (elapsedMs < 5000) return "Connecting to target & initializing engine...";
+  if (elapsedMs < 15000) return "Fetching remote assets & parsing static patterns...";
+  return "Deep AST analysis & generating CycloneDX 1.6 CBOM...";
+}
+
+function normalizeScanStatus(value: unknown): string {
+  return String(value ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, "_");
+}
+
+function extractScanId(payload: Record<string, unknown> | null | undefined): string | null {
+  if (!payload) return null;
+  for (const key of ["scan_id", "run_id", "id"]) {
+    const value = payload[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function fetchScanStatus(
+  scanId: string,
+  timeoutMs: number = SCAN_TIMEOUT_DEFAULT_MS
+): Promise<{ status: string; exit_code?: number; message?: string }> {
+  let scanRes: Response;
+  try {
+    scanRes = await fetch(`${API_BASE}/api/v1/scans/${encodeURIComponent(scanId)}`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch {
+    throw new Error(`Backend unreachable at ${API_BASE}. Scan service is not running.`);
+  }
+  if (scanRes.ok) {
+    const data = (await scanRes.json()) as Record<string, unknown>;
+    const status = normalizeScanStatus(data.status ?? data.run_status);
+    const exitCode = typeof data.exit_code === "number" ? data.exit_code : undefined;
+    const message = typeof data.message === "string" ? data.message : undefined;
+    return { status, exit_code: exitCode, message };
+  }
+  const postureRes = await fetch(`${API_BASE}/api/v1/posture?run_id=${encodeURIComponent(scanId)}`, {
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (postureRes.ok) {
+    const data = (await postureRes.json()) as Record<string, unknown>;
+    return { status: normalizeScanStatus(data.run_status) };
+  }
+  throw new Error(`Backend unreachable — unable to read scan status. Ensure the scan service is running at ${API_BASE}.`);
+}
+
+async function pollScanUntilSettled(
+  scanId: string,
+  timeoutMs: number = SCAN_TIMEOUT_DEFAULT_MS,
+  onProgress?: (elapsedMs: number, message: string) => void
+): Promise<{ status: string; exit_code?: number; message?: string }> {
+  const startedAt = Date.now();
+  const maxAttempts = Math.max(1, Math.ceil(timeoutMs / SCAN_POLL_INTERVAL_MS));
+  let last: { status: string; exit_code?: number; message?: string } = { status: "RUNNING" };
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const elapsed = Date.now() - startedAt;
+    onProgress?.(elapsed, getScanPhaseMessage(elapsed));
+    try {
+      last = await fetchScanStatus(scanId, timeoutMs);
+      if (TERMINAL_SUCCESS.has(last.status) || TERMINAL_FAILURE.has(last.status)) {
+        onProgress?.(Date.now() - startedAt, getScanPhaseMessage(Date.now() - startedAt));
+        return last;
+      }
+    } catch (err) {
+      throw err;
+    }
+    if (attempt < maxAttempts - 1) {
+      await wait(SCAN_POLL_INTERVAL_MS);
+    }
+  }
+  throw new Error(
+    `Scan service did not respond after ${timeoutMs}ms. The backend may be unreachable. Please check that uvicorn is running.`
+  );
+}
+
+const DEFAULT_POSTURE: ExecutivePosture = {
+  total_findings: 0,
+  unique_asset_ids: 0,
+  critical_findings_count: 0,
+  high_findings_count: 0,
+  medium_findings_count: 0,
+  low_findings_count: 0,
+  informational_findings_count: 0,
+  unassessed_findings_count: 0,
+  run_status: "NOT_STARTED",
+  scanner_failed_count: 0,
+  scanner_partial_count: 0,
+  policy_passed: false,
+  policy_violations: [],
+};
+
+const DEFAULT_INVENTORY: InventoryRow[] = [];
 
 export default function QryptonCommandCenter() {
+  const router = useRouter();
   // --- Data State ---
-  const [posture, setPosture] = useState<ExecutivePosture | null>(null);
-  const [inventory, setInventory] = useState<InventoryRow[]>([]);
+  const [posture, setPosture] = useState<ExecutivePosture | null>(DEFAULT_POSTURE);
+  const [inventory, setInventory] = useState<InventoryRow[]>(DEFAULT_INVENTORY);
   const [moscaPoints, setMoscaPoints] = useState<MoscaPoint[]>([]);
   const [heatmap, setHeatmap] = useState<RiskHeatmapCell[]>([]);
   const [roadmap, setRoadmap] = useState<RoadmapRow[]>([]);
 
-  const [loading, setLoading] = useState<boolean>(true);
+  const [loading, setLoading] = useState<boolean>(false);
   const [authReady, setAuthReady] = useState<boolean>(false);
-  const [refreshing, setRefreshing] = useState<boolean>(false);
+  const [, setRefreshing] = useState<boolean>(false);
   const [apiError, setApiError] = useState<string | null>(null);
 
-  // --- Theme (Light / Executive Dark) ---
-  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [theme] = useState<"light" | "dark">("dark");
+  const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [activeSection, setActiveSection] = useState<string>("dashboard");
 
   useEffect(() => {
-    const root = document.documentElement;
-    if (theme === "dark") {
-      root.classList.add("dark");
-    } else {
-      root.classList.remove("dark");
-    }
+    document.documentElement.classList.toggle("dark", theme === "dark");
   }, [theme]);
+
+  useEffect(() => {
+    const sessionActive = window.localStorage.getItem("qrypton.session") === "active" || window.sessionStorage.getItem("qrypton.session") === "active";
+    if (sessionActive) {
+      queueMicrotask(() => setAuthReady(true));
+    } else {
+      router.replace("/login");
+    }
+  }, [router]);
+
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => entries.forEach((entry) => entry.isIntersecting && setActiveSection(entry.target.id)),
+      { rootMargin: "-25% 0px -60% 0px" }
+    );
+    NAV_SECTIONS.forEach(({ id }) => document.getElementById(id) && observer.observe(document.getElementById(id)!));
+    return () => observer.disconnect();
+  }, []);
+
+  const navigateTo = useCallback((id: string) => {
+    setActiveSection(id);
+    document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
+  }, []);
+
+  const [scanPolling, setScanPolling] = useState<boolean>(false);
+  const [scanPhaseMessage, setScanPhaseMessage] = useState<string | null>(null);
+  const [scanElapsedMs, setScanElapsedMs] = useState<number>(0);
+  const [activeScanMeta, setActiveScanMeta] = useState<{
+    id: string;
+    target: string;
+    target_type: string;
+    environment: string;
+  } | null>(null);
 
   // --- Filter & Drawer State ---
   const [search, setSearch] = useState<string>("");
@@ -194,31 +348,73 @@ export default function QryptonCommandCenter() {
   const [isScanModalOpen, setIsScanModalOpen] = useState<boolean>(false);
   const [scanSubmitting, setScanSubmitting] = useState<boolean>(false);
   const [scanSuccessMessage, setScanSuccessMessage] = useState<string | null>(null);
+  const [scanError, setScanError] = useState<string | null>(null);
+  const [activeScanId, setActiveScanId] = useState<string | null>(null);
+  const [scanHistory, setScanHistory] = useState<ScanHistoryRecord[]>(DEFAULT_SCANS);
 
-  const [scanForm, setScanForm] = useState({
-    target_type: "source_repo",
-    repository: "https://github.com/org/payments-core",
-    branch: "main",
-    environment: "production",
-    business_criticality: "critical",
-    data_lifetime: 7.0, // X
-    migration_time: 4.0, // Y
-    crqc_horizon: 8.0, // Z
-  });
+  const [scanForm, setScanForm] = useState<ScanForm>(DEFAULT_SCAN_FORM);
 
-  // --- Data Fetching ---
-  const loadData = useCallback(async (isSilent = false) => {
+  const refreshScanHistory = useCallback(async () => {
+    const response = await fetch(`${API_BASE}/api/v1/scans`);
+    if (!response.ok) throw new Error("Unable to load persisted scan history.");
+    const rows = await response.json() as Array<Record<string, unknown>>;
+    setScanHistory(rows.map((row) => ({
+      id: String(row.scan_id ?? row.run_id ?? ""),
+      timestamp: String(row.completed_at ?? row.started_at ?? ""),
+      target: String(row.artifact ?? "unavailable"),
+      target_type: String(row.target_type ?? "unknown"),
+      environment: String(row.environment ?? "unknown"),
+      criticalCount: Number(row.critical_findings_count ?? 0),
+      highCount: Number(row.high_findings_count ?? 0),
+      mediumCount: Number(row.medium_findings_count ?? 0),
+      totalFindings: Number(row.total_findings ?? 0),
+      status: (normalizeScanStatus(row.status) === "PENDING" ? "RUNNING" : normalizeScanStatus(row.status)) as ScanHistoryRecord["status"],
+    })).filter((row) => row.id));
+  }, []);
+
+  const deleteHistoricalScan = useCallback(async (scanId: string) => {
+    const response = await fetch(`${API_BASE}/api/v1/scans/${encodeURIComponent(scanId)}`, { method: "DELETE" });
+    if (!response.ok) {
+      setApiError("Unable to delete the selected scan.");
+      return;
+    }
+    if (activeScanId === scanId) {
+      setActiveScanId(null);
+      setActiveScanMeta(null);
+    }
+    await refreshScanHistory();
+  }, [activeScanId, refreshScanHistory]);
+
+  const revealResults = useCallback((scanId: string) => {
+    setActiveScanId(scanId);
+    setActiveSection(RESULTS_SECTION_ID);
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set("id", scanId);
+      url.hash = RESULTS_SECTION_ID;
+      window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    } catch {
+      // Non-browser environment — skip URL sync but still scroll below.
+    }
+    window.requestAnimationFrame(() => {
+      document.getElementById(RESULTS_SECTION_ID)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }, []);
+
+  // --- Data Fetching (per-scan when runId is provided) ---
+  const loadData = useCallback(async (isSilent = false, runId?: string | null) => {
     try {
       if (!isSilent) setLoading(true);
       else setRefreshing(true);
       setApiError(null);
 
+      const suffix = runId ? `?run_id=${encodeURIComponent(runId)}` : "";
       const [postureRes, invRes, moscaRes, heatmapRes, roadmapRes] = await Promise.all([
-        fetch(`${API_BASE}/api/v1/posture`),
-        fetch(`${API_BASE}/api/v1/inventory`),
-        fetch(`${API_BASE}/api/v1/mosca/eval`),
-        fetch(`${API_BASE}/api/v1/heatmap`),
-        fetch(`${API_BASE}/api/v1/roadmap`),
+        fetch(`${API_BASE}/api/v1/posture${suffix}`),
+        fetch(`${API_BASE}/api/v1/inventory${suffix}`),
+        fetch(`${API_BASE}/api/v1/mosca/eval${suffix}`),
+        fetch(`${API_BASE}/api/v1/risk${suffix}`),
+        fetch(`${API_BASE}/api/v1/roadmap${suffix}`),
       ]);
 
       if (!postureRes.ok || !invRes.ok) {
@@ -236,14 +432,14 @@ export default function QryptonCommandCenter() {
       setPosture(postureData);
       setInventory(invData || []);
       setMoscaPoints(moscaData || []);
-      setHeatmap(heatmapData || []);
+      setHeatmap(Array.isArray(heatmapData) ? heatmapData : (heatmapData?.cells || []));
       setRoadmap(roadmapData || []);
-    } catch (err: unknown) {
-      if (err instanceof Error) {
-        setApiError(err.message);
-      } else {
-        setApiError("An unexpected error occurred while communicating with the QRYPTON backend.");
-      }
+      return postureData as ExecutivePosture;
+    } catch {
+      // Backend offline fallback - load default dataset
+      setPosture(DEFAULT_POSTURE);
+      setInventory(DEFAULT_INVENTORY);
+      return DEFAULT_POSTURE;
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -261,7 +457,7 @@ export default function QryptonCommandCenter() {
           fetch(`${API_BASE}/api/v1/posture`),
           fetch(`${API_BASE}/api/v1/inventory`),
           fetch(`${API_BASE}/api/v1/mosca/eval`),
-          fetch(`${API_BASE}/api/v1/heatmap`),
+          fetch(`${API_BASE}/api/v1/risk`),
           fetch(`${API_BASE}/api/v1/roadmap`),
         ]);
 
@@ -281,16 +477,14 @@ export default function QryptonCommandCenter() {
           setPosture(postureData);
           setInventory(invData || []);
           setMoscaPoints(moscaData || []);
-          setHeatmap(heatmapData || []);
+          setHeatmap(Array.isArray(heatmapData) ? heatmapData : (heatmapData?.cells || []));
           setRoadmap(roadmapData || []);
+          void refreshScanHistory().catch(() => setScanHistory([]));
         }
-      } catch (err: unknown) {
+      } catch {
         if (!ignore) {
-          if (err instanceof Error) {
-            setApiError(err.message);
-          } else {
-            setApiError("An unexpected error occurred while communicating with the QRYPTON backend.");
-          }
+          setPosture(DEFAULT_POSTURE);
+          setInventory(DEFAULT_INVENTORY);
         }
       } finally {
         if (!ignore) {
@@ -304,7 +498,47 @@ export default function QryptonCommandCenter() {
     return () => {
       ignore = true;
     };
+  }, [refreshScanHistory]);
+
+  // Deep-link (?id= / #results-section) hydration — syncs URL state into the Results section.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const scanId = params.get("id") || params.get("scan_id");
+    if (scanId) {
+      const targetId = scanId;
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setActiveScanId(targetId);
+      // Hydrate the Results section with this specific run's inventory (deferred to avoid sync setState in effect).
+      window.setTimeout(() => {
+        void loadData(true, targetId).catch(() => undefined);
+      }, 0);
+    }
+    const hash = window.location.hash.replace(/^#/, "");
+    if (hash === RESULTS_SECTION_ID || scanId) {
+      setActiveSection(RESULTS_SECTION_ID);
+      window.setTimeout(() => {
+        document.getElementById(RESULTS_SECTION_ID)?.scrollIntoView({ behavior: "smooth" });
+      }, 250);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  async function handleSelectHistoricalScan(scanId: string) {
+    setScanError(null);
+    setActiveScanId(scanId);
+    const known = scanHistory.find((row) => row.id === scanId);
+    if (known) {
+      setActiveScanMeta({
+        id: known.id,
+        target: known.target,
+        target_type: known.target_type,
+        environment: known.environment,
+      });
+    }
+    // Show only the selected run's findings in the Results section.
+    await loadData(true, scanId).catch(() => undefined);
+    revealResults(scanId);
+  }
 
   // --- Fetch Single Finding Detail ---
   const openFindingDrawer = async (findingId: string) => {
@@ -313,7 +547,8 @@ export default function QryptonCommandCenter() {
     setFindingDetail(null);
 
     try {
-      const res = await fetch(`${API_BASE}/api/v1/findings/${encodeURIComponent(findingId)}`);
+      const runSuffix = activeScanId ? `?run_id=${encodeURIComponent(activeScanId)}` : "";
+      const res = await fetch(`${API_BASE}/api/v1/findings/${encodeURIComponent(findingId)}${runSuffix}`);
       if (res.ok) {
         const data = await res.json();
         setFindingDetail(data);
@@ -338,40 +573,161 @@ export default function QryptonCommandCenter() {
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  // --- Scan Submission ---
+  // --- Scan Submission (dynamic timeout per target type) ---
   const handleStartScan = async () => {
-    try {
-      setScanSubmitting(true);
-      const payload = {
-        target_type: scanForm.target_type,
-        repository: scanForm.repository,
+    setScanSubmitting(true);
+    setScanError(null);
+    setScanSuccessMessage(null);
+    const activeTimeoutMs = getScanTimeoutForTarget(scanForm.target_type, scanForm.repository);
+    setScanPhaseMessage(getScanPhaseMessage(0));
+    setScanElapsedMs(0);
+
+    // Downstream payload preserves the ORIGINAL artifact: targetType +
+    // targetSource + artifactMetadata + businessContext travel together.
+    // Legacy flat fields (repository/artifact_id/branch) stay for compat, but
+    // the scanner routes on target_type and reads the real uploaded bytes via
+    // artifact_id — uploads are never filename-only.
+    const payload = {
+      target_type: scanForm.target_type,
+      target_source: buildTargetSource(scanForm),
+      artifact_metadata: buildArtifactMetadata(scanForm),
+      business_context: {
+        system_name: scanForm.system_name,
+        owner: scanForm.owner,
         environment: scanForm.environment,
         business_criticality: scanForm.business_criticality,
+        data_sensitivity: scanForm.data_sensitivity,
+        internet_exposure: scanForm.internet_exposure,
+        regulatory_relevance: scanForm.regulatory_relevance,
+        migration_complexity: scanForm.migration_complexity,
         data_lifetime: Number(scanForm.data_lifetime),
         migration_time: Number(scanForm.migration_time),
         crqc_horizon: Number(scanForm.crqc_horizon),
-      };
+      },
+      repository: scanForm.repository,
+      artifact_id: scanForm.artifact_id,
+      branch: scanForm.target_type === "source_repo" ? scanForm.branch || "main" : "",
+      environment: scanForm.environment,
+      business_criticality: scanForm.business_criticality,
+      system_name: scanForm.system_name,
+      owner: scanForm.owner,
+      data_sensitivity: scanForm.data_sensitivity,
+      internet_exposure: scanForm.internet_exposure,
+      regulatory_relevance: scanForm.regulatory_relevance,
+      migration_complexity: scanForm.migration_complexity,
+      data_lifetime: Number(scanForm.data_lifetime),
+      migration_time: Number(scanForm.migration_time),
+      crqc_horizon: Number(scanForm.crqc_horizon),
+    };
 
-      const res = await fetch(`${API_BASE}/api/v1/scans`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+    let scanId: string | null = null;
+    let status = "RUNNING";
+    let exitCode: number | undefined;
+    let failureMessage: string | undefined;
 
-      if (!res.ok) {
-        throw new Error(`Scan submission failed (${res.status})`);
+    try {
+      let response: Response;
+      try {
+        response = await fetch(`${API_BASE}/api/v1/scans`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(activeTimeoutMs),
+        });
+      } catch (networkError) {
+        throw new Error(
+          `Unable to connect to scan service at ${API_BASE}. ` +
+          `Please ensure the backend is running and accessible. ` +
+          (networkError instanceof Error ? `Details: ${networkError.message}` : "")
+        );
       }
 
-      setScanSuccessMessage("Cryptographic scan successfully initialized and analyzed!");
-      setTimeout(() => {
-        setIsScanModalOpen(false);
-        setScanSuccessMessage(null);
-              loadData(true);
-      }, 1200);
-    } catch (err: unknown) {
-      alert(err instanceof Error ? err.message : "Failed to trigger scan");
+      let body: Record<string, unknown> | null = null;
+      try {
+        body = (await response.json()) as Record<string, unknown>;
+      } catch {
+        body = null;
+      }
+
+      const returnedId = extractScanId(body);
+      if (returnedId) scanId = returnedId;
+      status = normalizeScanStatus(body?.status ?? body?.run_status) || status;
+      exitCode = typeof body?.exit_code === "number" ? body.exit_code : undefined;
+      failureMessage =
+        typeof body?.message === "string"
+          ? body.message
+          : typeof body?.detail === "string"
+            ? body.detail
+            : Array.isArray(body?.detail)
+              ? body.detail
+                  .map((entry) =>
+                    entry && typeof entry === "object" && "msg" in entry
+                      ? String((entry as { msg: unknown }).msg)
+                      : JSON.stringify(entry)
+                  )
+                  .join("; ")
+              : undefined;
+
+      if (!response.ok) {
+        throw new Error(
+          failureMessage || `Scan request failed (HTTP ${response.status}${exitCode != null ? `, exit ${exitCode}` : ""}).`
+        );
+      }
+
+      if (!TERMINAL_SUCCESS.has(status) && !TERMINAL_FAILURE.has(status)) {
+        setScanPolling(true);
+        try {
+          if (!scanId) throw new Error("Scan service returned no run ID.");
+          const settled = await pollScanUntilSettled(scanId, activeTimeoutMs, (elapsed, message) => {
+            setScanElapsedMs(elapsed);
+            setScanPhaseMessage(message);
+          });
+          status = settled.status;
+          exitCode = settled.exit_code ?? exitCode;
+          failureMessage = settled.message ?? failureMessage;
+        } finally {
+          setScanPolling(false);
+        }
+      }
+
+      if (TERMINAL_FAILURE.has(status) || (exitCode != null && exitCode !== 0 && !TERMINAL_SUCCESS.has(status))) {
+        throw new Error(
+          failureMessage ||
+            `Scan failed${exitCode != null ? ` (exit code ${exitCode})` : ""} with status ${status || "FAILED"}.`
+        );
+      }
+
+      if (!scanId) throw new Error("Scan service returned no run ID.");
+      const finishedId: string = scanId;
+      // Load only this scan's run view so the Results section reflects the just-scanned target.
+      await loadData(true, finishedId);
+      const finishedTarget = describeScanTarget(scanForm);
+      await refreshScanHistory();
+      setScanSuccessMessage("Cryptographic scan completed.");
+      setActiveScanMeta({
+        id: finishedId,
+        target: finishedTarget,
+        target_type: scanForm.target_type,
+        environment: scanForm.environment,
+      });
+      setIsScanModalOpen(false);
+      revealResults(finishedId);
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : "Scan failed. Review the target artifact and try again.";
+      setScanError(message);
+      const failedId: string | null = scanId;
+      if (failedId) {
+        void refreshScanHistory();
+      }
+      // Do not re-throw - error is already displayed to user via scanError state
     } finally {
       setScanSubmitting(false);
+      setScanPolling(false);
+      setScanPhaseMessage(null);
+      setScanElapsedMs(0);
     }
   };
 
@@ -446,9 +802,7 @@ export default function QryptonCommandCenter() {
     "critical",
   ];
 
-  if (!authReady) {
-    return <AuthFlow onComplete={() => setAuthReady(true)} />;
-  }
+  if (!authReady) return null;
 
   if (loading) {
     return (
@@ -472,98 +826,37 @@ export default function QryptonCommandCenter() {
   }
 
   return (
-    <div className="min-h-screen bg-background font-sans text-foreground antialiased">
-      {/* --- Sticky Workspace Header --- */}
-      <header className="sticky top-0 z-40 border-b border-border bg-card/95 backdrop-blur transition-all">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-6">
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-xl bg-gradient-to-tr from-cyan-600 to-blue-600 text-white shadow-lg shadow-cyan-500/20 ring-1 ring-white/20">
-                <Shield className="h-5 w-5" />
-              </div>
-              <div>
-                <span className="text-lg font-black tracking-wider text-white font-mono flex items-center gap-2">
-                  QRYPTON
-                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 font-semibold tracking-normal">
-                    PQC COMMAND
-                  </span>
-                </span>
-              </div>
-            </div>
-
-            {/* Anchor Navigation */}
-            <nav className="hidden md:flex items-center gap-1 text-xs font-medium text-slate-400">
-              <a
-                href="#dashboard"
-                className="px-3 py-1.5 rounded-lg hover:text-white hover:bg-slate-800/60 transition-colors"
-              >
-                Dashboard
-              </a>
-              <a
-                href="#live-scanner"
-                className="px-3 py-1.5 rounded-lg hover:text-white hover:bg-slate-800/60 transition-colors"
-              >
-                Live Scanner
-              </a>
-              <a
-                href="#heatmap"
-                className="px-3 py-1.5 rounded-lg hover:text-white hover:bg-slate-800/60 transition-colors"
-              >
-                Mosca Heatmap
-              </a>
-              <a
-                href="#roadmap"
-                className="px-3 py-1.5 rounded-lg hover:text-white hover:bg-slate-800/60 transition-colors"
-              >
-                PQC Roadmap
-              </a>
-              <a
-                href="#inventory"
-                className="px-3 py-1.5 rounded-lg hover:text-white hover:bg-slate-800/60 transition-colors"
-              >
-                Crypto Inventory
-              </a>
-            </nav>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))}
-              title={theme === "dark" ? "Switch to light mode" : "Switch to Executive dark mode"}
-              aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-              className="p-2 rounded-xl border border-slate-800 hover:border-slate-700 bg-slate-900/80 hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-all active:scale-95"
-            >
-              {theme === "dark" ? (
-                <Sun className="h-4 w-4" />
-              ) : (
-                <Moon className="h-4 w-4" />
-              )}
-            </button>
-
-            <button
-              onClick={() => loadData(true)}
-              disabled={refreshing}
-              title="Refresh inventory and postures"
-              className="p-2 rounded-xl border border-slate-800 hover:border-slate-700 bg-slate-900/80 hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-all active:scale-95 disabled:opacity-50"
-            >
-              <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin text-cyan-400" : ""}`} />
-            </button>
-
-            <button
-              onClick={() => {
-                              setIsScanModalOpen(true);
-              }}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-500 via-blue-600 to-indigo-600 hover:from-cyan-400 hover:to-indigo-500 text-white font-medium text-xs tracking-wide shadow-lg shadow-cyan-500/25 hover:shadow-cyan-500/40 border border-white/10 active:scale-95 transition-all"
-            >
-              <Sparkles className="h-3.5 w-3.5" />
-              + New Scan
-            </button>
-          </div>
-        </div>
+    <div className="min-h-screen overflow-x-hidden bg-background font-sans text-foreground antialiased">
+      <Sidebar active={activeSection} onNavigate={navigateTo} width={sidebarWidth} onWidthChange={setSidebarWidth} collapsed={sidebarCollapsed} onToggleCollapsed={() => setSidebarCollapsed((value) => !value)} />
+      <div
+        className="pl-0 transition-[padding] lg:pl-[var(--sidebar-w)]"
+        style={{ "--sidebar-w": sidebarCollapsed ? "0px" : `${sidebarWidth}px` } as React.CSSProperties}
+      >
+      <header className="absolute right-5 top-4 z-30 flex items-center gap-3 rounded-full border border-white/10 bg-[#0b0f17]/80 px-3 py-2 backdrop-blur sm:right-8">
+        <span className="grid size-8 place-items-center rounded-full bg-[#00ff87] text-xs font-black text-[#0b0f17]" aria-label="Signed-in user">Q</span>
+        <button type="button" onClick={() => { window.localStorage.removeItem("qrypton.session"); window.sessionStorage.removeItem("qrypton.session"); window.localStorage.removeItem("qrypton.user"); window.sessionStorage.removeItem("qrypton.user"); router.replace("/login"); }} className="text-xs font-semibold text-white/80 hover:text-[#00ff87]">Logout</button>
       </header>
+      <section className="qrypton-hero relative isolate flex min-h-[100svh] items-center overflow-hidden px-5 py-14 sm:px-10 lg:px-16">
+        <div className="qrypton-hero-grid" aria-hidden="true" />
+        <div className="relative z-10 mx-auto grid w-full max-w-7xl items-end gap-12 lg:grid-cols-[1.1fr_0.9fr]">
+          <div className="qrypton-hero-copy">
+            <h1>QRYPTON</h1>
+            <p className="qrypton-tagline">DISCOVER. ASSESS. EVOLVE.</p>
+            <p className="mt-8 max-w-md text-base leading-7 text-slate-400 sm:text-lg">CRYPTOGRAPHIC DISCOVERY, QUANTUM EXPOSURE MODELLING, AND PQC MIGRATION EVIDENCE — IN ONE SECURITY CONTROL PLANE.</p>
+            <button onClick={() => document.getElementById("new-scan")?.scrollIntoView({ behavior: "smooth" })} className="qrypton-scroll-cue mt-10">
+              Explore your cryptographic horizon <ArrowDown className="size-4" />
+            </button>
+          </div>
+          <div className="relative self-center justify-self-center lg:justify-self-end"><CryptoLockVisual /></div>
+        </div>
+      </section>
 
-      {/* --- Main Content Area --- */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+      <main className="relative mx-auto max-w-7xl space-y-8 px-4 py-16 sm:px-6 lg:px-8">
+        <section id="new-scan" className="qrypton-scan-portal">
+          <div><p className="qrypton-eyebrow">Start here · 02</p><h2>DISOVER. ASSES. EVOLVE.</h2><p>Map every algorithm, certificate and vulnerable dependency in your environment.</p></div>
+          <button onClick={() => setIsScanModalOpen(true)} className="qrypton-plus-button" aria-label="Start a new cryptographic scan"><Plus /></button>
+          <button onClick={() => setIsScanModalOpen(true)} className="qrypton-scan-label">New scan <span>→</span></button>
+        </section>
         {/* Connection Error Banner if backend fails */}
         {apiError && (
           <div className="p-4 rounded-xl border border-rose-500/30 bg-rose-950/40 backdrop-blur-md flex items-center justify-between gap-4">
@@ -578,6 +871,56 @@ export default function QryptonCommandCenter() {
               Retry Connection
             </button>
           </div>
+        )}
+
+        {scanSubmitting && (
+          <div className="qrypton-card flex items-center gap-3 border-primary/30 p-4" role="status" aria-live="polite">
+            <Loader2 className="size-5 shrink-0 animate-spin text-primary" aria-hidden="true" />
+            <div>
+              <p className="text-sm font-semibold">Scan in progress</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">Collecting cryptographic evidence. Results open automatically when this run completes.</p>
+            </div>
+          </div>
+        )}
+
+        {scanError && (
+          <div className="flex items-start justify-between gap-4 rounded-xl border border-rose-500/30 bg-rose-950/40 p-4" role="alert">
+            <div className="flex items-start gap-3 text-sm text-rose-300">
+              <XCircle className="mt-0.5 h-5 w-5 shrink-0 text-rose-500" />
+              <div>
+                <p className="font-semibold text-rose-200">Scan failed</p>
+                <p className="mt-1 text-rose-300/90">{scanError}</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setScanError(null)}
+              className="rounded-lg border border-rose-500/40 px-3 py-1.5 text-xs font-medium text-rose-200 hover:bg-rose-500/20"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        {(!posture || posture.total_findings === 0) && (
+          <section className="qrypton-card flex flex-col items-center justify-center text-center p-8 sm:p-12 space-y-4">
+            <div className="flex size-14 items-center justify-center rounded-2xl bg-primary/10 text-primary border border-primary/20">
+              <Shield className="size-7" aria-hidden="true" />
+            </div>
+            <div className="max-w-md space-y-2">
+              <p className="qrypton-kicker">First-Time Assessment</p>
+              <h2 className="text-2xl font-bold tracking-tight">Run First Cryptographic Scan</h2>
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                Connect your repository or runtime infrastructure to discover legacy algorithms, map cryptographic evidence, and construct your post-quantum migration roadmap.
+              </p>
+            </div>
+            <button
+              onClick={() => setIsScanModalOpen(true)}
+              className="inline-flex min-h-10 items-center justify-center rounded-xl bg-primary px-6 text-sm font-semibold text-primary-foreground shadow-md transition-all hover:opacity-90 active:scale-95"
+            >
+              Run First Cryptographic Scan
+            </button>
+          </section>
         )}
 
         <section aria-labelledby="attention-heading" className="qrypton-card overflow-hidden">
@@ -596,75 +939,13 @@ export default function QryptonCommandCenter() {
           </div>
         </section>
 
-        <section aria-labelledby="scan-status-heading" className="qrypton-card p-5">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div><p className="qrypton-kicker">Coverage signal</p><h2 id="scan-status-heading" className="mt-1 text-base font-semibold">Recent scan activity</h2></div>
-            <span className={`inline-flex w-fit items-center gap-2 rounded-full px-2.5 py-1 text-xs font-semibold ${posture?.run_status?.toLowerCase().includes("fail") ? "qrypton-risk-critical" : posture?.run_status?.toLowerCase().includes("run") || posture?.run_status?.toLowerCase().includes("progress") ? "qrypton-risk-medium" : "qrypton-risk-success"}`}><span className="size-1.5 rounded-full bg-current" />{posture?.run_status ? posture.run_status.replace(/_/g, " ") : "No scan status"}</span>
-          </div>
-          <div className="mt-4 flex flex-col gap-3 rounded-md border border-border bg-muted/40 p-4 sm:flex-row sm:items-center sm:justify-between">
-            <div><p className="text-sm font-medium">{posture?.run_status?.toLowerCase().includes("run") ? "A scan is currently evaluating your cryptographic estate." : posture?.total_findings ? "Latest scan completed with actionable findings." : "No completed scan data is available yet."}</p><p className="mt-1 text-xs leading-5 text-muted-foreground">{posture?.scanner_failed_count ? `${posture.scanner_failed_count} scanner failed. Review coverage before relying on this posture.` : "Coverage and findings are reflected in the command center below."}</p></div>
-            <button onClick={() => setIsScanModalOpen(true)} className="inline-flex min-h-9 shrink-0 items-center justify-center rounded-md bg-primary px-3 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90">Run new scan</button>
-          </div>
-        </section>
-
-        {/* --- Mosca Urgency Warning Banner ($X + Y > Z$) --- */}
-        {moscaViolation && (
-          <div
-            id="mosca-banner"
-            className="relative overflow-hidden rounded-2xl border border-rose-500/50 bg-gradient-to-r from-rose-950/80 via-slate-900/90 to-rose-950/60 p-6 backdrop-blur-xl shadow-2xl shadow-rose-950/50"
-          >
-            <div className="absolute top-0 right-0 transform translate-x-8 -translate-y-8 w-48 h-48 bg-rose-500/10 rounded-full blur-2xl pointer-events-none" />
-            <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6">
-              <div className="flex items-start gap-4">
-                <div className="p-3 rounded-xl bg-rose-500/20 border border-rose-500/40 text-rose-400 mt-1">
-                  <ShieldAlert className="h-7 w-7 animate-pulse" />
-                </div>
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-rose-500/30 text-rose-200 border border-rose-400/40">
-                      CRITICAL MOSCA TIMELINE EXPOSURE
-                    </span>
-                    <span className="text-xs font-mono text-rose-400/80">
-                      Theorem: X + Y &gt; Z Deficit
-                    </span>
-                  </div>
-                  <h3 className="text-lg font-bold text-white tracking-tight">
-                    Quantum Decryption Vulnerability Detected (Harvest Now, Decrypt Later)
-                  </h3>
-                  <p className="text-sm text-slate-300 max-w-3xl leading-relaxed">
-                    Data confidentiality lifetime (
-                    <strong className="text-rose-300 font-mono">X = {moscaViolation.x} yrs</strong>)
-                    plus required cryptographic migration effort (
-                    <strong className="text-amber-300 font-mono">Y = {moscaViolation.y} yrs</strong>)
-                    exceeds the anticipated Cryptanalytically Relevant Quantum Computer horizon (
-                    <strong className="text-cyan-300 font-mono">Z = {moscaViolation.z} yrs</strong>
-                    ). High-value secrets are vulnerable to retrospective harvest.
-                  </p>
-                </div>
-              </div>
-
-              {/* Timeline metrics display box */}
-              <div className="flex items-center gap-3 bg-slate-950/80 border border-rose-500/30 rounded-xl p-4 font-mono text-xs shadow-inner">
-                <div className="text-center px-3 border-r border-slate-800">
-                  <div className="text-[10px] text-slate-400 uppercase">X + Y Time</div>
-                  <div className="text-base font-bold text-rose-400">
-                    {moscaViolation.x + moscaViolation.y} yrs
-                  </div>
-                </div>
-                <div className="text-center px-3 border-r border-slate-800">
-                  <div className="text-[10px] text-slate-400 uppercase">Z Horizon</div>
-                  <div className="text-base font-bold text-cyan-400">{moscaViolation.z} yrs</div>
-                </div>
-                <div className="text-center px-3">
-                  <div className="text-[10px] text-rose-400 uppercase font-bold">Deficit</div>
-                  <div className="text-base font-bold text-rose-500">
-                    +{moscaViolation.deficit.toFixed(1)} yrs
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
+        <ScanHistory
+          scans={scanHistory}
+          onSelectScan={(scanId) => {
+            void handleSelectHistoricalScan(scanId);
+          }}
+          onDelete={(scanId) => { void deleteHistoricalScan(scanId); }}
+        />
 
         {/* --- Top KPI Cards --- */}
         <section id="dashboard" className="space-y-4">
@@ -768,8 +1049,6 @@ export default function QryptonCommandCenter() {
             </div>
           </div>
         </section>
-
-        <LiveTelemetry />
 
         <RiskPrioritization
           heatmap={heatmap}
@@ -918,7 +1197,7 @@ export default function QryptonCommandCenter() {
                 {roadmap.length > 0 ? (
                   roadmap.map((item, idx) => (
                     <div
-                      key={item.finding_id || idx}
+                      key={`${item.finding_id || 'item'}-${idx}`}
                       className="p-4 rounded-xl border border-slate-800 bg-slate-950/70 hover:border-slate-700 transition-all flex flex-col gap-2"
                     >
                       <div className="flex items-center justify-between">
@@ -942,19 +1221,19 @@ export default function QryptonCommandCenter() {
                       </p>
 
                       {/* Target Algorithms / Standards tags */}
-                      {item.target_algorithms && item.target_algorithms.length > 0 && (
-                        <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                          <span className="text-[10px] text-slate-400 font-mono">Target:</span>
-                          {item.target_algorithms.map((algo, i) => (
-                            <span
-                              key={i}
-                              className="px-2 py-0.5 rounded-md text-[10px] font-mono font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
-                            >
-                              {algo}
-                            </span>
-                          ))}
-                        </div>
-                      )}
+                              {item.target_algorithms && item.target_algorithms.length > 0 && (
+                                <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                                  <span className="text-[10px] text-slate-400 font-mono">Target:</span>
+                                  {item.target_algorithms.map((algo, i) => (
+                                    <span
+                                      key={`${algo || 'item'}-${i}`}
+                                      className="px-2 py-0.5 rounded-md text-[10px] font-mono font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                                    >
+                                      {algo}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
                     </div>
                   ))
                 ) : (
@@ -977,150 +1256,74 @@ export default function QryptonCommandCenter() {
           </section>
         </div>
 
-        <CryptoInventory items={inventory} query={search} onQueryChange={setSearch} onSelect={openFindingDrawer} onClear={() => { setSearch(""); setSelectedHeatmapCell(null); }} />
-
-        {/* Legacy inventory markup retained for API compatibility; the unified workspace above is the visible presentation. */}
-        {/* --- Searchable Cryptographic Inventory Table --- */}
-        <section
-          id="legacy-inventory"
-          className="hidden"
-        >
-          <div className="p-6 border-b border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <section id={RESULTS_SECTION_ID} aria-labelledby="results-heading" className="space-y-3 scroll-mt-24">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
             <div>
-              <h3 className="text-base font-bold text-white tracking-tight flex items-center gap-2">
-                <Lock className="h-4 w-4 text-cyan-400" />
-                Cryptographic Findings Inventory
-              </h3>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Click any row to open the deep evidence provenance &amp; AST code drawer
+              <p className="qrypton-kicker">Scan results</p>
+              <h2 id="results-heading" className="mt-1 text-xl font-semibold tracking-tight">Results</h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {activeScanMeta
+                  ? `Showing only findings for “${activeScanMeta.target}” (${activeScanMeta.id}).`
+                  : activeScanId
+                    ? `Showing inventory and findings for ${activeScanId}.`
+                    : "Inventory, evidence, and risk from the latest completed scan. Run a scan to see its dedicated result here."}
               </p>
-            </div>
-
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-              {selectedHeatmapCell && (
-                <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 text-xs font-mono">
-                  <Filter className="h-3 w-3" />
-                  <span>
-                    {selectedHeatmapCell.urgency.toUpperCase()} /{" "}
-                    {selectedHeatmapCell.criticality.toUpperCase()}
+              {activeScanMeta && (
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                  <span className="inline-flex items-center rounded-full border border-primary/40 bg-primary/10 px-2.5 py-1 font-mono font-semibold text-primary">
+                    {activeScanMeta.id}
                   </span>
-                  <button
-                    onClick={() => setSelectedHeatmapCell(null)}
-                    className="hover:text-white"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
+                  {activeScanMeta.target_type && (
+                    <span className="inline-flex items-center rounded-full border border-border px-2.5 py-1 font-mono text-muted-foreground">
+                      {activeScanMeta.target_type}
+                    </span>
+                  )}
+                  <span className="inline-flex items-center rounded-full border border-border px-2.5 py-1 font-mono capitalize text-muted-foreground">
+                    {activeScanMeta.environment}
+                  </span>
+                  <span className="inline-flex items-center rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 font-semibold text-emerald-300">
+                    {posture?.total_findings ?? 0} findings
+                  </span>
                 </div>
               )}
-
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
-                <input
-                  type="text"
-                  placeholder="Search algorithm or finding ID..."
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  className="w-full sm:w-72 bg-slate-950 border border-slate-700/80 rounded-xl pl-9 pr-4 py-2 text-xs font-mono text-slate-200 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
-                />
-              </div>
             </div>
+            {activeScanId && (
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveScanId(null);
+                  setActiveScanMeta(null);
+                  void loadData(true, null);
+                }}
+                className="text-xs font-semibold text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+              >
+                Show latest scan instead
+              </button>
+            )}
           </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="border-b border-slate-800 bg-slate-950/60 text-[11px] font-mono uppercase tracking-wider text-slate-400">
-                  <th className="px-6 py-3.5 font-medium">Finding ID</th>
-                  <th className="px-6 py-3.5 font-medium">Algorithm</th>
-                  <th className="px-6 py-3.5 font-medium">Family</th>
-                  <th className="px-6 py-3.5 font-medium">Category</th>
-                  <th className="px-6 py-3.5 font-medium">Risk Score</th>
-                  <th className="px-6 py-3.5 font-medium">Risk Level</th>
-                  <th className="px-6 py-3.5 font-medium text-right">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800 text-xs font-mono">
-                {filteredInventory.length > 0 ? (
-                  filteredInventory.map((item) => (
-                    <tr
-                      key={item.finding_id}
-                      onClick={() => openFindingDrawer(item.finding_id)}
-                      className="hover:bg-slate-800/40 transition-colors cursor-pointer group"
-                    >
-                      <td className="px-6 py-4 font-mono text-slate-400 group-hover:text-cyan-300 transition-colors">
-                        <span className="truncate block max-w-[180px]" title={item.finding_id}>
-                          {item.finding_id}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 font-semibold text-white">
-                        {item.algorithm_name || "-"}
-                      </td>
-                      <td className="px-6 py-4 text-slate-300">
-                        {item.algorithm_family || "-"}
-                      </td>
-                      <td className="px-6 py-4 text-slate-300 capitalize">
-                        {item.category?.replace(/_/g, " ") || "-"}
-                      </td>
-                      <td className="px-6 py-4 text-slate-300">
-                        {item.risk_score !== null && item.risk_score !== undefined
-                          ? item.risk_score.toFixed(1)
-                          : "-"}
-                      </td>
-                      <td className="px-6 py-4">
-                        <span
-                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold border ${
-                            item.risk_level === "critical"
-                              ? "bg-rose-500/15 text-rose-400 border-rose-500/30"
-                              : item.risk_level === "high"
-                              ? "bg-amber-500/15 text-amber-400 border-amber-500/30"
-                              : item.risk_level === "medium"
-                              ? "bg-blue-500/15 text-blue-400 border-blue-500/30"
-                              : "bg-slate-700/30 text-slate-300 border-slate-600/30"
-                          }`}
-                        >
-                          <span
-                            className={`h-1.5 w-1.5 rounded-full ${
-                              item.risk_level === "critical"
-                                ? "bg-rose-400 animate-pulse"
-                                : item.risk_level === "high"
-                                ? "bg-amber-400"
-                                : "bg-slate-400"
-                            }`}
-                          />
-                          {item.risk_level.toUpperCase()}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        <span className="inline-flex items-center gap-1 text-[11px] text-cyan-400 group-hover:translate-x-0.5 transition-transform">
-                          Evidence
-                          <ChevronRight className="h-3 w-3" />
-                        </span>
-                      </td>
-                    </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td colSpan={7} className="px-6 py-16 text-center text-slate-500 font-mono">
-                      <div className="flex flex-col items-center gap-3">
-                        <FileText className="h-8 w-8 text-slate-600" />
-                        <p>No matching cryptographic inventory records found.</p>
-                        {search && (
-                          <button
-                            onClick={() => setSearch("")}
-                            className="text-xs text-cyan-400 underline"
-                          >
-                            Clear search filters
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+          {activeScanId && inventory.length === 0 ? (
+            <div className="qrypton-card p-8 text-center" role="status">
+              <p className="text-sm font-semibold">No findings stored for this scan yet.</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                The run {activeScanId} completed but returned an empty inventory. Try another target or re-run the scan.
+              </p>
+            </div>
+          ) : (
+            <CryptoInventory items={filteredInventory} query={search} onQueryChange={setSearch} onSelect={openFindingDrawer} onClear={() => { setSearch(""); setSelectedHeatmapCell(null); }} />
+          )}
         </section>
+
+        <section id="reports" className="grid gap-4 lg:grid-cols-2" aria-labelledby="reports-heading">
+          <div className="qrypton-card p-6"><p className="qrypton-kicker">Export engine</p><h2 id="reports-heading" className="mt-1 text-xl font-semibold">Reports &amp; CBOM</h2><p className="mt-2 text-sm leading-6 text-muted-foreground">Export CycloneDX-compatible CBOM JSON, a printable executive PDF summary, or a provenance-preserving HTML audit report from Scan History or the inventory.</p><div className="mt-4 flex flex-wrap gap-2"><button onClick={() => document.getElementById("scans")?.scrollIntoView({ behavior: "smooth" })} className="rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground">Open scan exports</button><button onClick={() => document.getElementById("inventory")?.scrollIntoView({ behavior: "smooth" })} className="rounded-md border border-border px-3 py-2 text-sm font-semibold">Export inventory CBOM</button></div></div>
+          <div className="qrypton-card p-6"><p className="qrypton-kicker">CI/CD delta</p><h2 className="mt-1 text-xl font-semibold">Scan comparison</h2><p className="mt-2 text-sm leading-6 text-muted-foreground">Compare two historical runs of the same target to review new and removed assets, changed algorithms or key sizes, newly critical risks, resolved findings, and overall risk movement.</p><div className="mt-4 grid grid-cols-2 gap-2 text-xs"><span className="rounded border border-emerald-500/30 bg-emerald-500/10 p-2">+ New crypto assets</span><span className="rounded border border-rose-500/30 bg-rose-500/10 p-2">New critical risks</span><span className="rounded border border-border p-2">Changed parameters</span><span className="rounded border border-border p-2">Resolved findings</span></div></div>
+        </section>
+
+        <section id="integrations" className="qrypton-card p-6" aria-labelledby="integrations-heading"><p className="qrypton-kicker">Controlled connections</p><h2 id="integrations-heading" className="mt-1 text-xl font-semibold">Integrations</h2><p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">Connect source control, CI/CD, container registries, and cloud KMS through organization-managed credentials. New scans never collect secrets in the workflow.</p><div className="mt-4 flex flex-wrap gap-2 text-xs"><span className="rounded-full border border-border px-3 py-1.5">Source control</span><span className="rounded-full border border-border px-3 py-1.5">Container registry</span><span className="rounded-full border border-border px-3 py-1.5">Cloud KMS</span><span className="rounded-full border border-border px-3 py-1.5">CI/CD</span></div></section>
+
+        {/* Live Cryptographic Network Scanner at bottom of dashboard (Task 6) */}
+        {inventory.length > 0 ? <LiveTelemetry /> : <section id="live-scanner" className="qrypton-card qrypton-empty-inspection"><p className="qrypton-eyebrow">Network inspection</p><h2>See your result stream here.</h2><p>Live handshakes, classification activity, and exposure signals appear after your first scan connects an asset.</p><button onClick={() => setIsScanModalOpen(true)}>Configure a scan <ArrowDown className="size-4" /></button></section>}
       </main>
+      </div>
 
       <FindingDetail
         open={isDrawerOpen}
@@ -1139,7 +1342,12 @@ export default function QryptonCommandCenter() {
         onSubmit={handleStartScan}
         submitting={scanSubmitting}
         successMessage={scanSuccessMessage}
+        submitError={scanError}
+        polling={scanPolling}
+        phaseMessage={scanPhaseMessage}
+        elapsedMs={scanElapsedMs}
       />
+
     </div>
   );
 }

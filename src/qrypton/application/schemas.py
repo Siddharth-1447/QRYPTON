@@ -96,6 +96,12 @@ class RunResult(DomainModel):
     status: RunStatus
     started_at: UtcDateTime
     completed_at: UtcDateTime | None = None
+    # These are the sanitized, canonical scan descriptors required to rebuild
+    # history and dashboard views after a process restart.  They are optional
+    # solely so databases written by older releases remain readable.
+    asset: Asset | None = None
+    target: ScanTarget | None = None
+    business_context: BusinessContext | None = None
     scanner_results: tuple[ScannerExecutionResult, ...] = ()
     failures: tuple[RunFailure, ...] = ()
     evidence: tuple[Evidence, ...] = ()

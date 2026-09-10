@@ -38,24 +38,16 @@ def test_api_health() -> None:
     assert data["service"] == "QRYPTON Cryptographic Inventory API"
 
 
-def test_api_inventory_with_mock_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_api_inventory_never_returns_mock_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("QRYPTON_DB", str(tmp_path / "missing.db"))
     response = client.get("/api/v1/inventory")
-    assert response.status_code == 200
-    items = response.json()
-    assert isinstance(items, list)
-    assert len(items) >= 5
-    assert any("RSA" in str(item.get("algorithm_name")) for item in items)
+    assert response.status_code == 503
 
 
-def test_api_posture_with_mock_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_api_posture_never_returns_mock_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("QRYPTON_DB", str(tmp_path / "missing.db"))
     response = client.get("/api/v1/posture")
-    assert response.status_code == 200
-    posture = response.json()
-    assert posture["total_findings"] >= 5
-    assert posture["critical_findings_count"] >= 1
-    assert posture["run_status"] == "completed"
+    assert response.status_code == 503
 
 
 def test_api_with_populated_sqlite_store(
@@ -78,6 +70,138 @@ def test_api_with_populated_sqlite_store(
     posture = resp_post.json()
     assert posture["total_findings"] == 2
     assert posture["critical_findings_count"] == 1
+
+
+def _scan_payload(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "target_type": "source_repo",
+        "repository": "https://github.com/org/payments-core",
+        "environment": "production",
+        "business_criticality": "critical",
+        "data_lifetime": 7,
+        "migration_time": 4,
+        "crqc_horizon": 8,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_create_and_get_scan(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("QRYPTON_DB", str(tmp_path / "missing.db"))
+    source_dir = tmp_path / "payments-core"
+    source_dir.mkdir()
+    (source_dir / "crypto.py").write_bytes(b"import hashlib\nhashlib.sha256(b'x')\n")
+    response = client.post(
+        "/api/v1/scans",
+        json=_scan_payload(repository=str(source_dir)),
+    )
+    assert response.status_code == 200
+    created = response.json()
+    assert created["scan_id"]
+    assert created["status"] in {"COMPLETED", "PARTIAL", "QUEUED", "RUNNING"}
+
+    status = client.get(f"/api/v1/scans/{created['scan_id']}")
+    assert status.status_code == 200
+    body = status.json()
+    assert body["scan_id"]
+    assert body["status"]
+
+
+def test_upload_and_scan_binary_artifact(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("QRYPTON_DB", str(tmp_path / "upload.db"))
+    monkeypatch.setenv("QRYPTON_UPLOADS", str(tmp_path / "uploads"))
+    uploaded = client.post(
+        "/api/v1/uploads",
+        files={"file": ("service.bin", b"\x7fELF fake binary payload")},
+    )
+    assert uploaded.status_code == 200
+    artifact = uploaded.json()
+    assert artifact["artifact_id"]
+    assert artifact["locator"] == f"upload://{artifact['artifact_id']}"
+
+    for locator in ("", artifact["locator"]):
+        response = client.post(
+            "/api/v1/scans",
+            json=_scan_payload(
+                target_type="binary",
+                repository=locator,
+                artifact_id=artifact["artifact_id"] if not locator else None,
+            ),
+        )
+        assert response.status_code == 200
+        assert response.json()["scan_id"]
+
+
+def test_scan_kms_key_arn_without_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("QRYPTON_DB", str(tmp_path / "kms.db"))
+    for identifier in (
+        "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012",
+        "https://myvault.vault.azure.net/keys/mykey/abc123",
+        "projects/p/locations/global/keyRings/r/cryptoKeys/k",
+    ):
+        response = client.post(
+            "/api/v1/scans",
+            json=_scan_payload(target_type="cloud_kms", repository=identifier),
+        )
+        assert response.status_code == 200
+        assert response.json()["scan_id"]
+
+
+def test_scan_container_reference_without_pull(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("QRYPTON_DB", str(tmp_path / "container.db"))
+    response = client.post(
+        "/api/v1/scans",
+        json=_scan_payload(target_type="container_image", repository="nginx:latest"),
+    )
+    assert response.status_code == 200
+    assert response.json()["scan_id"]
+
+
+def test_scan_rejects_unknown_artifact_and_registry_ref(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("QRYPTON_DB", str(tmp_path / "reject.db"))
+    monkeypatch.setenv("QRYPTON_UPLOADS", str(tmp_path / "uploads"))
+    unknown = client.post(
+        "/api/v1/scans",
+        json=_scan_payload(
+            target_type="binary", repository="", artifact_id="0" * 32
+        ),
+    )
+    assert unknown.status_code == 422
+
+    registry = client.post(
+        "/api/v1/scans",
+        json=_scan_payload(
+            target_type="container_image",
+            repository="registry.enterprise.io/app:v1.0.4",
+        ),
+    )
+    assert registry.status_code == 422
+    assert "docker save" in registry.json()["detail"]
+
+    host = client.post(
+        "/api/v1/scans",
+        json=_scan_payload(
+            target_type="source_repo",
+            repository="https://example.com/foo/bar",
+        ),
+    )
+    assert host.status_code == 422
+
+    gitlab_shape = client.post(
+        "/api/v1/scans",
+        json=_scan_payload(
+            target_type="source_repo",
+            repository="https://gitlab.com/onlyone",
+        ),
+    )
+    assert gitlab_shape.status_code == 422
+
+    empty_upload = client.post("/api/v1/uploads", files={"file": ("empty.bin", b"")})
+    assert empty_upload.status_code == 422
 
 
 def test_cors_headers() -> None:

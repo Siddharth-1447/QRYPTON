@@ -1,0 +1,115 @@
+name: QRYPTON cryptographic risk gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  qrypton:
+    # Forked PRs never receive organization secrets or baseline credentials.
+    if: github.event.pull_request.head.repo.fork == false
+    runs-on: ubuntu-latest
+    env:
+      QRYPTON_ID_SECRET: ${{ secrets.QRYPTON_ID_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - run: pip install .
+      # Baselines are read from the protected default branch, never the PR ref.
+      - name: Restore trusted baseline
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: .qrypton-trusted-baseline
+      - name: Scan and gate new cryptographic risk
+        id: qrypton-scan
+        run: |-
+          qrypton ci scan . \
+            --tenant-id '${{ vars.QRYPTON_TENANT_ID }}' \
+            --asset-kind repository \
+            --asset-reference '${{ github.repository }}' \
+            --asset-name '${{ github.event.repository.name }}' \
+            --id-secret-env QRYPTON_ID_SECRET \
+            --baseline .qrypton-trusted-baseline/.qrypton/baseline.ci.json \
+            --changed-from '${{ github.event.pull_request.base.sha }}' \
+            --db qrypton-ci.sqlite3 \
+            --cbom-output qrypton.cbom.json \
+            --ci-output qrypton.ci.json \
+            --max-risk '${{ vars.QRYPTON_MAX_RISK || 'high' }}' \
+            --quiet
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+      - name: Upload sanitized QRYPTON artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qrypton-${{ github.sha }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            qrypton.cbom.json
+            qrypton.ci.json
+      - name: Post PR comment with findings summary
+        if: always() && hashFiles('qrypton.ci.json') != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const ci = JSON.parse(fs.readFileSync('qrypton.ci.json', 'utf8'));
+            const delta = ci.delta || [];
+            const introduced = ci.introduced || [];
+            const newCount = delta.filter(d => d.change === 'new').length;
+            const removedCount = delta.filter(d => d.change === 'removed').length;
+            const changedCount = delta.filter(d => d.change === 'changed').length;
+
+            let icon = ci.exit_code === 0 ? '✅' : '❌';
+            let body = `## ${icon} QRYPTON Cryptographic Risk Report\n\n`;
+            body += `| Metric | Count |\n|---|---|\n`;
+            body += `| New findings | ${newCount} |\n`;
+            body += `| Removed findings | ${removedCount} |\n`;
+            body += `| Changed findings | ${changedCount} |\n`;
+            body += `| Introduced (policy-relevant) | ${introduced.length} |\n`;
+            body += `| Scanner failures | ${ci.scanner?.failed || 0} |\n`;
+            body += `| Scanner partials | ${ci.scanner?.partial || 0} |\n\n`;
+
+            if (introduced.length > 0) {
+              body += `### Introduced findings\n\n`;
+              body += `| Fingerprint | Risk | Change |\n|---|---|---|\n`;
+              for (const item of introduced) {
+                const shortFp = item.fingerprint.substring(0, 16) + '...';
+                body += `| \`${shortFp}\` | ${item.risk_level} | ${item.change} |\n`;
+              }
+              body += `\n`;
+            }
+
+            body += `> Exit code: ${ci.exit_code} (${ci.exit_reason})\n`;
+            body += `> Run ID: \`${ci.run_id}\`\n`;
+
+            const comments = await github.rest.issues.listComments({
+              ...context.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.data.find(c =>
+              c.user.type === 'Bot' && c.body.includes('QRYPTON Cryptographic Risk Report')
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({
+                ...context.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }

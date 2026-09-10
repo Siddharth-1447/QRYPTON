@@ -6,9 +6,22 @@ from uuid import UUID
 
 import pytest
 
-from qrypton.contracts.enums import AlgorithmFamily, AssetKind, EvidenceKind
+from qrypton.contracts.enums import (
+    AlgorithmFamily,
+    AssetKind,
+    Criticality,
+    EvidenceKind,
+    ObservationState,
+)
 from qrypton.contracts.errors import CBOMExportError, CBOMValidationError
-from qrypton.contracts.models import Asset, Evidence, EvidenceLocation
+from qrypton.contracts.models import (
+    Asset,
+    BusinessContext,
+    Evidence,
+    EvidenceLocation,
+    Observation,
+    PersistedMoscaEvaluation,
+)
 from qrypton.exporters.cyclonedx_1_6 import CbomExportContext, CycloneDx16CbomExporter
 from tests.risk.conftest import finding, provenance
 from tests.unit.contracts.conftest import digest
@@ -86,7 +99,7 @@ def test_unsupported_asset_kind_fails_closed() -> None:
     item = finding("sha-1", AlgorithmFamily.HASH)
     with pytest.raises(CBOMExportError):
         CycloneDx16CbomExporter().export(
-            asset=_asset(AssetKind.HOST),
+            asset=_asset(AssetKind.DATASTORE),
             findings=(item,),
             assessments=(),
             recommendations=(),
@@ -94,6 +107,77 @@ def test_unsupported_asset_kind_fails_closed() -> None:
             evidence=(),
             context=_context(),
         )
+
+
+def test_cbom_retains_business_context_and_mosca_timelines() -> None:
+    item = finding("sha-1", AlgorithmFamily.HASH)
+    evidence_id = item.evidence_ids[0]
+    business = BusinessContext(
+        id=f"context_{'a' * 52}",
+        tenant_id=f"tenant_{'a' * 52}",
+        asset_id=f"asset_{'a' * 52}",
+        criticality=Observation(
+            state=ObservationState.OBSERVED,
+            value=Criticality.CRITICAL,
+            basis_evidence_ids=(evidence_id,),
+        ),
+        data_classification=Observation(
+            state=ObservationState.OBSERVED,
+            value="restricted",
+            basis_evidence_ids=(evidence_id,),
+        ),
+        internet_exposed=Observation(
+            state=ObservationState.OBSERVED,
+            value=True,
+            basis_evidence_ids=(evidence_id,),
+        ),
+        regulatory_scopes=("pci-dss",),
+        owner_reference=Observation(
+            state=ObservationState.OBSERVED,
+            value="team-crypto",
+            basis_evidence_ids=(evidence_id,),
+        ),
+        provenance=provenance(),
+    )
+    mosca = PersistedMoscaEvaluation(
+        finding_id=item.id,
+        x_data_lifetime_years=7.0,
+        y_migration_years=4.0,
+        z_crqc_horizon_years=8.0,
+        required_security_years=11.0,
+        time_margin_years=-3.0,
+        exposure_score=100.0,
+        urgency="critical",
+    )
+    document = json.loads(
+        CycloneDx16CbomExporter().export(
+            asset=_asset(),
+            findings=(item,),
+            assessments=(),
+            recommendations=(),
+            recommendation_plans=(),
+            evidence=(),
+            context=_context(),
+            business_context=business,
+            mosca_evaluations=(mosca,),
+        )
+    )
+    root_props = {
+        entry["name"]: entry["value"]
+        for entry in document["metadata"]["component"]["properties"]
+    }
+    assert root_props["org.qrypton.business.criticality"] == "critical"
+    assert root_props["org.qrypton.business.data-classification"] == "restricted"
+    assert root_props["org.qrypton.business.internet-exposed"] == "true"
+    assert root_props["org.qrypton.business.owner"] == "team-crypto"
+    assert json.loads(root_props["org.qrypton.business.regulatory-scopes"]) == ["pci-dss"]
+    finding_props = {
+        entry["name"]: entry["value"] for entry in document["components"][0]["properties"]
+    }
+    mosca_doc = json.loads(finding_props["org.qrypton.mosca"])
+    assert mosca_doc["urgency"] == "critical"
+    assert mosca_doc["x_data_lifetime_years"] == 7.0
+    assert mosca_doc["z_crqc_horizon_years"] == 8.0
 
 
 def test_invalid_document_is_rejected_by_official_schema() -> None:
