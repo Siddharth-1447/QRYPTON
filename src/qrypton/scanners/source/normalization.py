@@ -32,7 +32,12 @@ from qrypton.contracts.models import (
 )
 from qrypton.contracts.primitives import JsonScalar
 from qrypton.ports.scanners import RawObservation
-from qrypton.scanners.source.rules import MODE_NAMES, algorithm_for_name
+from qrypton.scanners.source.rules import (
+    MODE_NAMES,
+    AlgorithmComponent,
+    algorithm_components,
+    algorithm_for_name,
+)
 
 T = TypeVar("T")
 
@@ -164,12 +169,18 @@ class SourceNormalizer:
         findings = [
             self._finding(
                 item,
+                component=component,
                 asset=asset,
                 target=target,
                 provenance=provenance,
                 id_deriver=id_deriver,
             )
             for item in unique.values()
+            for component in (
+                algorithm_components(str(item.attributes.get("subject_value", ""))) or (None,)
+                if item.attributes.get("subject_kind") == "algorithm"
+                else (None,)
+            )
         ]
         return tuple(sorted(findings, key=lambda item: item.id))
 
@@ -177,6 +188,7 @@ class SourceNormalizer:
         self,
         evidence: Evidence,
         *,
+        component: AlgorithmComponent | None = None,
         asset: Asset,
         target: ScanTarget,
         provenance: Provenance,
@@ -201,12 +213,23 @@ class SourceNormalizer:
             # A mode only identifies its cipher when the same observation
             # supplies an explicit binding (or a composite name such as AES-CBC).
             bound_name = attributes.get("algorithm_name")
-            rule = algorithm_for_name(
+            rule = component.rule if component is not None else algorithm_for_name(
                 bound_name
                 if subject_kind == "mode" and isinstance(bound_name, str)
                 else subject_value
             )
             parameters: dict[str, JsonScalar] = {}
+            if component is not None:
+                if component.role is not None:
+                    attributes["crypto_role"] = component.role
+                if component.hash_name is not None:
+                    parameters["hash_algorithm"] = component.hash_name
+                curve = attributes.get("curve")
+                if (
+                    component.rule.family == "signature" and isinstance(curve, str)
+                    and re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", curve)
+                ):
+                    parameters["curve"] = curve
             mode = attributes.get("mode")
             if not isinstance(mode, str):
                 tokens = re.split(r"[-_.]", subject_value.casefold())
@@ -214,6 +237,11 @@ class SourceNormalizer:
             if isinstance(mode, str) and mode.casefold() in MODE_NAMES:
                 parameters["mode"] = mode.upper()
             raw_size = attributes.get("key_size_bits")
+            if component is not None:
+                if component.role == "hash":
+                    raw_size = None
+                elif raw_size is None:
+                    raw_size = component.key_size_bits
             key_size: Observation[int] = _unknown()
             # bool is an int subclass; invalid/unresolved metadata must not
             # manufacture an observed size or crash the normalization stage.
@@ -299,6 +327,8 @@ class SourceNormalizer:
             "subject_kind": subject_kind,
             "subject_value": subject_value,
         }
+        if component is not None and component.role is not None:
+            payload["algorithm_constituent"] = component.rule.canonical_name
         finding_id = id_deriver.derive(
             namespace="finding",
             tenant_id=asset.tenant_id,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from qrypton.contracts.algorithm_names import HASH_ALIASES, canonical_algorithm_name
@@ -143,17 +144,69 @@ _HASH_TOKENS = tuple(
 )
 
 
-def algorithm_for_name(name: str) -> AlgorithmRule | None:
+@dataclass(frozen=True, slots=True)
+class AlgorithmComponent:
+    rule: AlgorithmRule
+    key_size_bits: int | None = None
+    role: str | None = None
+    hash_name: str | None = None
+
+
+_SIGNATURE_NAMES = {
+    "rsawithsha256": ("rsa", "sha256"),
+    "sha256withrsa": ("rsa", "sha256"),
+    "sha256withrsaencryption": ("rsa", "sha256"),
+    "ecdsa-with-sha384": ("ecdsa", "sha384"),
+}
+
+
+def algorithm_components(name: str) -> tuple[AlgorithmComponent, ...]:
+    normalized = name.strip().casefold()
+    if signature := _SIGNATURE_NAMES.get(normalized):
+        public_key, digest = signature
+        rule = ALGORITHM_RULES[public_key]
+        hash_rule = ALGORITHM_RULES[digest]
+        return (
+            AlgorithmComponent(
+                AlgorithmRule(rule.canonical_name, "signature", rule.lifecycle),
+                role="signature", hash_name=hash_rule.canonical_name,
+            ),
+            AlgorithmComponent(hash_rule, role="hash"),
+        )
     if api_rule := _EXACT_API_RULES.get(name.strip().casefold()):
-        return api_rule
+        return (AlgorithmComponent(api_rule),)
     canonical = canonical_algorithm_name(name)
     if canonical in _CANONICAL_RULES:
-        return _CANONICAL_RULES[canonical]
-    normalized = name.strip().casefold().replace("-", "_").replace(".", "_")
-    for token, rule in _ORDERED_ALIASES:
-        if normalized == token or normalized.startswith(f"{token}_"):
-            return rule
-    for token, rule in (*_HASH_TOKENS, *_ORDERED_TOKENS):
-        if token not in {"crypt", "crypt32"} and token in normalized:
-            return rule
-    return None
+        return (AlgorithmComponent(_CANONICAL_RULES[canonical]),)
+    if alias_rule := _RULE_ALIASES.get(normalized.replace("-", "_")):
+        return (AlgorithmComponent(alias_rule),)
+    if match := re.fullmatch(r"rsa[-_]?([1-9][0-9]{0,6})", normalized):
+        bits = int(match[1])
+        if bits <= 1_000_000:
+            return (AlgorithmComponent(ALGORITHM_RULES["rsa"], key_size_bits=bits),)
+    if (
+        (match := re.fullmatch(r"(aes|des|3des)[-_.]([a-z]+)", normalized))
+        and match[2] in MODE_NAMES
+    ):
+        return (AlgorithmComponent(_CANONICAL_RULES[match[1]]),)
+    # Do not let legacy API/variant aliases guess an unparsed signature or size.
+    if (
+        "with" in normalized
+        or re.match(r"rsa[-_]?\d", normalized)
+        or (any(key in normalized for key in ("rsa", "ecdsa"))
+            and any(digest in normalized for digest in ("sha", "md5")))
+    ):
+        return ()
+    alias_name = normalized.replace("-", "_").replace(".", "_")
+    for token, legacy_rule in _ORDERED_ALIASES:
+        if alias_name.startswith(f"{token}_"):
+            return (AlgorithmComponent(legacy_rule),)
+    for token, legacy_rule in (*_HASH_TOKENS, *_ORDERED_TOKENS):
+        if token not in {"crypt", "crypt32"} and token in alias_name:
+            return (AlgorithmComponent(legacy_rule),)
+    return ()
+
+
+def algorithm_for_name(name: str) -> AlgorithmRule | None:
+    components = algorithm_components(name)
+    return components[0].rule if components else None

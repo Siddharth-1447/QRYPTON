@@ -10,7 +10,12 @@ from qrypton.contracts.enums import EvidenceKind
 from qrypton.contracts.models import EvidenceLocation
 from qrypton.ports.scanners import ScanLimits, SourceObservation
 from qrypton.scanners.source.policy import SourceScanPolicy
-from qrypton.scanners.source.rules import CRYPTO_LIBRARY_PREFIXES, MODE_NAMES, algorithm_for_name
+from qrypton.scanners.source.rules import (
+    CRYPTO_LIBRARY_PREFIXES,
+    MODE_NAMES,
+    algorithm_components,
+    algorithm_for_name,
+)
 from qrypton.scanners.source.traversal import SourceFile
 
 _SECRET_LITERAL = re.compile(r"(?i)(key|secret|password|token)\s*=|b?['\"][^'\"]{16,}['\"]")
@@ -206,25 +211,38 @@ class _Visitor(ast.NodeVisitor):
         full_name = (_attribute_name(node.func, self.imports) or "").casefold()
         self._bind_cipher_mode(node, full_name)
         tail = full_name.rsplit(".", 1)[-1]
-        rule = algorithm_for_name(full_name) or algorithm_for_name(tail)
+        matched_name = full_name if algorithm_for_name(full_name) else tail
+        tail_components = algorithm_components(tail)
+        if tail_components and (
+            len(tail_components) > 1 or tail_components[0].key_size_bits is not None
+        ):
+            matched_name = tail
+        rule = algorithm_for_name(matched_name)
         if rule is None:
             rule = next(
                 (
                     candidate
                     for segment in reversed(full_name.split("."))
                     if (candidate := algorithm_for_name(segment)) is not None
+                    and (matched_name := segment)
                 ),
                 None,
             )
         if rule and "." in full_name:
             parameters = self._parameters(node, full_name)
+            components = algorithm_components(matched_name)
+            subject = (
+                matched_name if len(components) > 1
+                or (components and components[0].key_size_bits is not None)
+                else rule.canonical_name
+            )
             self.output.append(
                 _observation(
                     self.source,
                     node,
                     rule_id=f"python.algorithm.{rule.canonical_name.replace('-', '_')}",
                     subject_kind="algorithm",
-                    subject_value=rule.canonical_name,
+                    subject_value=subject,
                     confidence=1.00 if parameters else 0.95,
                     policy=self.policy,
                     parameters=parameters,

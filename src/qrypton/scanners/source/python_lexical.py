@@ -10,7 +10,11 @@ from qrypton.contracts.enums import EvidenceKind
 from qrypton.contracts.models import EvidenceLocation
 from qrypton.ports.scanners import ScanLimits, SourceObservation
 from qrypton.scanners.source.policy import SourceScanPolicy
-from qrypton.scanners.source.rules import CRYPTO_LIBRARY_PREFIXES, algorithm_for_name
+from qrypton.scanners.source.rules import (
+    CRYPTO_LIBRARY_PREFIXES,
+    algorithm_components,
+    algorithm_for_name,
+)
 from qrypton.scanners.source.traversal import SourceFile
 
 
@@ -72,11 +76,16 @@ def analyze_python_lexical(
         rule = algorithm_for_name(lowered)
         next_token = tokens[index + 1] if index + 1 < len(tokens) else None
         if rule and next_token is not None and next_token.string == "(":
+            components = algorithm_components(lowered)
             yield _observation(
                 source,
                 token,
                 rule_id=f"python.lexical.algorithm.{lowered}",
                 subject_kind="algorithm",
-                subject=rule.canonical_name,
+                subject=(
+                    lowered if len(components) > 1
+                    or (components and components[0].key_size_bits is not None)
+                    else rule.canonical_name
+                ),
                 confidence=0.60,
             )
