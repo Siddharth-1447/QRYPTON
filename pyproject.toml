@@ -17,6 +17,19 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+api = [
+  "fastapi>=0.141.1,<0.142",
+  "python-multipart>=0.0.32,<0.1",
+  "uvicorn>=0.52.4,<0.53",
+]
+dev = [
+  "qrypton[api,ui]",
+  "httpx>=0.28.1,<0.29",
+  "hypothesis>=6.115,<7",
+  "mypy>=1.13,<2",
+  "pytest>=8.3,<9",
+  "ruff>=0.8,<1",
+]
 ui = [
   "plotly>=5.24,<6",
   "streamlit>=1.40,<2",
@@ -26,12 +39,7 @@ ui = [
 qrypton = "qrypton.cli:main"
 
 [dependency-groups]
-dev = [
-  "hypothesis>=6.115,<7",
-  "mypy>=1.13,<2",
-  "pytest>=8.3,<9",
-  "ruff>=0.8,<1",
-]
+dev = ["qrypton[dev]"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/qrypton"]
