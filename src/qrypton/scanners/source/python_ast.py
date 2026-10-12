@@ -130,15 +130,34 @@ class _Visitor(ast.NodeVisitor):
         # Only explicitly bit-valued signatures above establish a key size.
         if node in self.algorithm_modes:
             parameters["mode"] = self.algorithm_modes[node]
-        if full_name == "crypto.cipher.aes.new":
+        if full_name in {
+            "crypto.cipher.aes.new", "crypto.cipher.des.new", "crypto.cipher.des3.new"
+        }:
             mode_node = node.args[1] if len(node.args) > 1 else keywords.get("mode")
             mode_name = (
                 (_attribute_name(mode_node, self.imports) or "").casefold() if mode_node else ""
             )
-            if mode_name.startswith("crypto.cipher.aes.mode_"):
-                mode = mode_name.removeprefix("crypto.cipher.aes.mode_")
+            mode_prefix = full_name.removesuffix("new") + "mode_"
+            if mode_name.startswith(mode_prefix):
+                mode = mode_name.removeprefix(mode_prefix)
                 if mode in MODE_NAMES:
                     parameters["mode"] = mode.upper()
+            if full_name in {"crypto.cipher.des.new", "crypto.cipher.des3.new"}:
+                key_node = node.args[0] if node.args else keywords.get("key")
+                byte_length: int | None = None
+                if isinstance(key_node, ast.Constant) and isinstance(key_node.value, bytes):
+                    byte_length = len(key_node.value)
+                elif (
+                    isinstance(key_node, ast.BinOp) and isinstance(key_node.op, ast.Mult)
+                    and isinstance(key_node.left, ast.Constant)
+                    and isinstance(key_node.left.value, bytes)
+                    and isinstance(key_node.right, ast.Constant)
+                    and type(key_node.right.value) is int
+                    and key_node.right.value > 0
+                ):
+                    byte_length = len(key_node.left.value) * key_node.right.value
+                if byte_length is not None and 1 <= byte_length * 8 <= 1_000_000:
+                    parameters["key_size_bits"] = byte_length * 8
         return parameters
 
     def visit(self, node: ast.AST) -> None:
@@ -187,7 +206,7 @@ class _Visitor(ast.NodeVisitor):
         full_name = (_attribute_name(node.func, self.imports) or "").casefold()
         self._bind_cipher_mode(node, full_name)
         tail = full_name.rsplit(".", 1)[-1]
-        rule = algorithm_for_name(tail)
+        rule = algorithm_for_name(full_name) or algorithm_for_name(tail)
         if rule is None:
             rule = next(
                 (

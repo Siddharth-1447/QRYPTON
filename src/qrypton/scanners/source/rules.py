@@ -26,6 +26,8 @@ ALGORITHM_RULES: dict[str, AlgorithmRule] = {
     "sha3_384": AlgorithmRule("sha3-384", "hash", "approved"),
     "sha3_512": AlgorithmRule("sha3-512", "hash", "approved"),
     "aes": AlgorithmRule("aes", "symmetric_cipher", "approved"),
+    "des": AlgorithmRule("des", "symmetric_cipher", "disallowed"),
+    "des3": AlgorithmRule("3des", "symmetric_cipher", "disallowed"),
     "chacha20": AlgorithmRule("chacha20", "symmetric_cipher", "approved"),
     "rsa": AlgorithmRule("rsa", "asymmetric_encryption", "legacy"),
     "ec": AlgorithmRule("ec", "key_agreement", "approved"),
@@ -105,9 +107,25 @@ _ORDERED_TOKENS: tuple[tuple[str, AlgorithmRule], ...] = (
 )
 
 _CANONICAL_RULES = {rule.canonical_name: rule for rule in ALGORITHM_RULES.values()}
+_EXACT_API_RULES = {
+    "crypto.cipher.des.new": ALGORITHM_RULES["des"],
+    "crypto.cipher.des3.new": ALGORITHM_RULES["des3"],
+    **{
+        f"{prefix}.{function}".casefold(): ALGORITHM_RULES["crypt"]
+        for prefix, functions in (
+            ("ctypes.windll.advapi32", ("CryptAcquireContextA", "CryptAcquireContextW",
+                                      "CryptEncrypt", "CryptDecrypt", "CryptGenKey",
+                                      "CryptCreateHash", "CryptHashData")),
+            ("ctypes.windll.crypt32", ("CryptProtectData", "CryptUnprotectData")),
+            ("win32crypt", ("CryptProtectData", "CryptUnprotectData")),
+        )
+        for function in functions
+    },
+}
 _RULE_ALIASES = {
     name.replace("-", "_"): rule
     for name, rule in (*ALGORITHM_RULES.items(), *_CANONICAL_RULES.items())
+    if name not in {"crypt", "crypt32"}
 }
 _RULE_ALIASES.update(
     {
@@ -126,6 +144,8 @@ _HASH_TOKENS = tuple(
 
 
 def algorithm_for_name(name: str) -> AlgorithmRule | None:
+    if api_rule := _EXACT_API_RULES.get(name.strip().casefold()):
+        return api_rule
     canonical = canonical_algorithm_name(name)
     if canonical in _CANONICAL_RULES:
         return _CANONICAL_RULES[canonical]
@@ -134,6 +154,6 @@ def algorithm_for_name(name: str) -> AlgorithmRule | None:
         if normalized == token or normalized.startswith(f"{token}_"):
             return rule
     for token, rule in (*_HASH_TOKENS, *_ORDERED_TOKENS):
-        if token in normalized:
+        if token not in {"crypt", "crypt32"} and token in normalized:
             return rule
     return None
