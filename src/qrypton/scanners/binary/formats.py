@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import struct
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,8 @@ class ParsedBinary:
     exports: tuple[str, ...]
     libraries: tuple[str, ...]
     sections: tuple[BinarySection, ...]
+    partial: bool = False
+    warnings: tuple[str, ...] = ()
 
 
 def _read_at(stream: BinaryIO, offset: int, size: int, file_size: int) -> bytes:
@@ -147,30 +150,49 @@ def _parse_pe(stream: BinaryIO, size: int) -> ParsedBinary:
     if len(optional) < 2:
         raise ValueError("truncated PE optional header")
     magic = struct.unpack_from("<H", optional)[0]
+    if magic not in {0x10B, 0x20B}:
+        raise ValueError("invalid PE optional header magic")
     directory_offset = 112 if magic == 0x20B else 96
     directories = optional[directory_offset : directory_offset + 16]
     sections_raw = _read_at(stream, pe_offset + 24 + optional_size, section_count * 40, size)
+    if len(sections_raw) != section_count * 40:
+        raise ValueError("truncated PE section table")
     sections: list[BinarySection] = []
-    mappings: list[tuple[int, int, int]] = []
+    mappings: list[tuple[int, int, int, int]] = []
     for position in range(0, len(sections_raw), 40):
         name, virtual_size, virtual_address, raw_size, raw_offset = struct.unpack_from(
             "<8sIIII", sections_raw, position
         )
         sections.append(BinarySection(_cstr(name, 0, limit=8), raw_offset, raw_size))
-        mappings.append((virtual_address, max(virtual_size, raw_size), raw_offset))
+        mappings.append((virtual_address, max(virtual_size, raw_size), raw_offset, raw_size))
 
     def rva_to_offset(rva: int) -> int | None:
         if rva <= 0:
             return None
-        for start, length, offset in mappings:
+        for start, length, offset, _ in mappings:
             if start <= rva < start + length:
                 candidate = offset + rva - start
                 return candidate if candidate < size else None
         return None
 
+    def export_span(rva: int, minimum: int = 1) -> tuple[int, int] | None:
+        """Only file-backed bytes count; virtual padding must never read an overlay."""
+        if rva <= 0:
+            return None
+        for start, _, offset, raw_length in mappings:
+            displacement = rva - start
+            candidate = offset + displacement
+            if (
+                0 <= displacement <= raw_length - minimum
+                and 0 <= candidate <= size - minimum
+            ):
+                return candidate, min(raw_length - displacement, size - candidate)
+        return None
+
     imports: list[str] = []
     exports: list[str] = []
     libraries: list[str] = []
+    warnings: set[str] = set()
     if len(directories) >= 16:
         import_rva, _ = struct.unpack_from("<II", directories, 8)
         import_offset = rva_to_offset(import_rva)
@@ -201,22 +223,61 @@ def _parse_pe(stream: BinaryIO, size: int) -> ParsedBinary:
                     symbol = _cstr(_read_at(stream, (symbol_offset or size) + 2, 1024, size), 0)
                     if symbol:
                         imports.append(symbol)
-        export_rva, _ = struct.unpack_from("<II", directories, 0)
-        export_offset = rva_to_offset(export_rva)
-        export_directory = _read_at(stream, export_offset or size, 40, size)
-        if len(export_directory) == 40:
-            name_count, names_rva = struct.unpack_from("<II", export_directory, 24)
-            names_offset = rva_to_offset(names_rva)
-            if names_offset is not None:
-                for index in range(min(name_count, 1_000_000)):
-                    name_rva_blob = _read_at(stream, names_offset + index * 4, 4, size)
-                    if len(name_rva_blob) != 4:
-                        break
-                    name_offset = rva_to_offset(struct.unpack("<I", name_rva_blob)[0])
-                    name = _cstr(_read_at(stream, name_offset or size, 1024, size), 0)
-                    if name:
-                        exports.append(name)
-    return ParsedBinary("pe", tuple(imports), tuple(exports), tuple(libraries), tuple(sections))
+        export_rva, export_size = struct.unpack_from("<II", directories, 0)
+        directory_span = export_span(export_rva, 40)
+        if export_rva and (directory_span is None or export_size < 40):
+            warnings.add("invalid or truncated PE export directory")
+        elif export_rva and directory_span is not None:
+            export_directory = _read_at(stream, directory_span[0], 40, size)
+            function_count, name_count = struct.unpack_from("<II", export_directory, 20)
+            functions_rva, names_rva, ordinals_rva = struct.unpack_from(
+                "<III", export_directory, 28
+            )
+            names_span = export_span(names_rva, 4)
+            ordinals_span = export_span(ordinals_rva, 2)
+            functions_span = export_span(functions_rva, 4)
+            if name_count and (
+                names_span is None or ordinals_span is None or functions_span is None
+            ):
+                warnings.add("invalid PE export table RVA")
+            elif name_count and names_span and ordinals_span and functions_span:
+                bounded_count = min(name_count, 65536, names_span[1] // 4, ordinals_span[1] // 2)
+                if bounded_count < name_count:
+                    warnings.add("PE export name count bounded")
+                for index in range(bounded_count):
+                    name_rva = struct.unpack(
+                        "<I", _read_at(stream, names_span[0] + index * 4, 4, size)
+                    )[0]
+                    ordinal = struct.unpack(
+                        "<H", _read_at(stream, ordinals_span[0] + index * 2, 2, size)
+                    )[0]
+                    if ordinal >= function_count or ordinal * 4 + 4 > functions_span[1]:
+                        warnings.add("invalid PE export name ordinal")
+                        continue
+                    function_rva = struct.unpack(
+                        "<I", _read_at(stream, functions_span[0] + ordinal * 4, 4, size)
+                    )[0]
+                    if not function_rva:
+                        warnings.add("missing PE export function")
+                        continue
+                    name_span = export_span(name_rva)
+                    if name_span is None:
+                        warnings.add("invalid PE export name RVA")
+                        continue
+                    blob = _read_at(stream, name_span[0], min(1024, name_span[1]), size)
+                    terminator = blob.find(b"\0")
+                    if terminator < 0:
+                        warnings.add("unterminated PE export name")
+                        continue
+                    name_bytes = blob[:terminator]
+                    if not re.fullmatch(rb"[A-Za-z_?@$][A-Za-z0-9_?@$]*", name_bytes):
+                        warnings.add("invalid PE export identifier")
+                        continue
+                    exports.append(name_bytes.decode("ascii"))
+    return ParsedBinary(
+        "pe", tuple(imports), tuple(sorted(set(exports))), tuple(libraries), tuple(sections),
+        partial=bool(warnings), warnings=tuple(sorted(warnings)),
+    )
 
 
 def _parse_macho(stream: BinaryIO, size: int) -> ParsedBinary:

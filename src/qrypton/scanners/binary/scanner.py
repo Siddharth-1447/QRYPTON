@@ -132,6 +132,9 @@ class LocalBinaryScanner:
             self.partial = True
         emitted = 0
         if parsed is not None:
+            if parsed.partial:
+                self.partial = True
+                warnings.extend(parsed.warnings)
             for kind, values in (("import", parsed.imports), ("export", parsed.exports)):
                 for symbol_index, symbol in enumerate(values):
                     if symbol_index % 64 == 0:
