@@ -61,7 +61,10 @@ def _observation(
             line_start=getattr(node, "lineno", None),
             line_end=getattr(node, "end_lineno", None),
             byte_start=getattr(node, "col_offset", None),
-            byte_end=getattr(node, "end_col_offset", None),
+            byte_end=getattr(node, "end_col_offset", None)
+            if getattr(node, "lineno", None) == getattr(node, "end_lineno", None)
+            and getattr(node, "end_col_offset", 0) >= getattr(node, "col_offset", 0)
+            else None,
         ),
         payload_digest=source.digest,
         excerpt=_snippet(source, node, policy.max_snippet_bytes),
@@ -82,6 +85,61 @@ class _Visitor(ast.NodeVisitor):
         self.imports: dict[str, str] = {}
         self.output: list[SourceObservation] = []
         self.nodes = 0
+        self.mode_algorithms: dict[ast.AST, str] = {}
+        self.algorithm_modes: dict[ast.AST, str] = {}
+
+    def _bind_cipher_mode(self, node: ast.Call, full_name: str) -> None:
+        if full_name != "cryptography.hazmat.primitives.ciphers.cipher":
+            return
+        keywords = {keyword.arg: keyword.value for keyword in node.keywords}
+        algorithm_node = node.args[0] if node.args else keywords.get("algorithm")
+        mode_node = node.args[1] if len(node.args) > 1 else keywords.get("mode")
+        if not isinstance(algorithm_node, ast.Call) or not isinstance(mode_node, ast.Call):
+            return
+        algorithm_name = (_attribute_name(algorithm_node.func, self.imports) or "").casefold()
+        mode_name = (_attribute_name(mode_node.func, self.imports) or "").casefold()
+        mode = mode_name.rsplit(".", 1)[-1]
+        rule = algorithm_for_name(algorithm_name.rsplit(".", 1)[-1])
+        if (
+            algorithm_name.startswith("cryptography.hazmat.primitives.ciphers.algorithms.")
+            and mode_name.startswith("cryptography.hazmat.primitives.ciphers.modes.")
+            and mode in MODE_NAMES
+            and rule is not None
+            and rule.family == "symmetric_cipher"
+        ):
+            self.mode_algorithms[mode_node] = rule.canonical_name
+            self.algorithm_modes[algorithm_node] = mode.upper()
+
+    def _parameters(
+        self, node: ast.Call, full_name: str
+    ) -> dict[str, str | int | float | bool | None]:
+        parameters: dict[str, str | int | float | bool | None] = {}
+        keywords = {keyword.arg: keyword.value for keyword in node.keywords}
+        size_node = keywords.get("key_size")
+        if full_name == "crypto.publickey.rsa.generate":
+            size_node = node.args[0] if node.args else keywords.get("bits")
+        elif full_name == "cryptography.hazmat.primitives.asymmetric.rsa.generate_private_key":
+            size_node = node.args[1] if len(node.args) > 1 else keywords.get("key_size")
+        if (
+            isinstance(size_node, ast.Constant)
+            and type(size_node.value) is int
+            and 1 <= size_node.value <= 1_000_000
+        ):
+            parameters["key_size_bits"] = size_node.value
+        # "length" is API-dependent and often measured in bytes (e.g. HKDF).
+        # Only explicitly bit-valued signatures above establish a key size.
+        if node in self.algorithm_modes:
+            parameters["mode"] = self.algorithm_modes[node]
+        if full_name == "crypto.cipher.aes.new":
+            mode_node = node.args[1] if len(node.args) > 1 else keywords.get("mode")
+            mode_name = (
+                (_attribute_name(mode_node, self.imports) or "").casefold() if mode_node else ""
+            )
+            if mode_name.startswith("crypto.cipher.aes.mode_"):
+                mode = mode_name.removeprefix("crypto.cipher.aes.mode_")
+                if mode in MODE_NAMES:
+                    parameters["mode"] = mode.upper()
+        return parameters
 
     def visit(self, node: ast.AST) -> None:
         self.nodes += 1
@@ -127,6 +185,7 @@ class _Visitor(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:
         full_name = (_attribute_name(node.func, self.imports) or "").casefold()
+        self._bind_cipher_mode(node, full_name)
         tail = full_name.rsplit(".", 1)[-1]
         rule = algorithm_for_name(tail)
         if rule is None:
@@ -139,14 +198,7 @@ class _Visitor(ast.NodeVisitor):
                 None,
             )
         if rule and "." in full_name:
-            parameters: dict[str, str | int | float | bool | None] = {}
-            for keyword in node.keywords:
-                if (
-                    keyword.arg in {"key_size", "length"}
-                    and isinstance(keyword.value, ast.Constant)
-                    and isinstance(keyword.value.value, int)
-                ):
-                    parameters["key_size_bits"] = keyword.value.value
+            parameters = self._parameters(node, full_name)
             self.output.append(
                 _observation(
                     self.source,
@@ -169,6 +221,9 @@ class _Visitor(ast.NodeVisitor):
                     subject_value=tail.upper(),
                     confidence=0.95,
                     policy=self.policy,
+                    parameters={"algorithm_name": self.mode_algorithms[node]}
+                    if node in self.mode_algorithms
+                    else None,
                 )
             )
         if full_name.endswith("sslcontext") or full_name.endswith("wrap_socket"):

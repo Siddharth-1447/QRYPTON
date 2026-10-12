@@ -139,7 +139,8 @@ def _parse_pe(stream: BinaryIO, size: int) -> ParsedBinary:
     header = _read_at(stream, pe_offset, 24, size)
     if header[:4] != b"PE\0\0" or len(header) != 24:
         raise ValueError("invalid PE header")
-    section_count, optional_size = struct.unpack_from("<HH", header, 6)
+    section_count = struct.unpack_from("<H", header, 6)[0]
+    optional_size = struct.unpack_from("<H", header, 20)[0]
     if section_count > 4096:
         raise ValueError("invalid PE section count")
     optional = _read_at(stream, pe_offset + 24, optional_size, size)
@@ -159,11 +160,13 @@ def _parse_pe(stream: BinaryIO, size: int) -> ParsedBinary:
         mappings.append((virtual_address, max(virtual_size, raw_size), raw_offset))
 
     def rva_to_offset(rva: int) -> int | None:
+        if rva <= 0:
+            return None
         for start, length, offset in mappings:
             if start <= rva < start + length:
                 candidate = offset + rva - start
                 return candidate if candidate < size else None
-        return rva if rva < size else None
+        return None
 
     imports: list[str] = []
     exports: list[str] = []
