@@ -48,7 +48,7 @@ def test_no_dynamic_code_execution_or_dangerous_subprocesses() -> None:
         visitor.visit(tree)
         violations.extend(visitor.violations)
 
-    assert not violations, f"Security audit violations detected:\n" + "\n".join(violations)
+    assert not violations, "Security audit violations detected:\n" + "\n".join(violations)
 
 
 def test_logger_sanitizes_unauthorized_fields() -> None:
