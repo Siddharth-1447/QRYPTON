@@ -54,6 +54,8 @@ addopts = "-ra"
 [tool.ruff]
 target-version = "py311"
 line-length = 100
+# Audit scratch space, generated artifacts, and the deliberately vulnerable scanner sample are not maintained code.
+extend-exclude = ["qa_audit", "tmp", "scratch", "src/qrypton/sample_payment_app"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
@@ -63,6 +65,8 @@ python_version = "3.11"
 strict = true
 files = ["src"]
 warn_unreachable = true
+# Scanner fixtures intentionally import optional crypto packages and omit production typing.
+exclude = ["^src/qrypton/sample_payment_app/"]
 
 [[tool.mypy.overrides]]
 module = ["streamlit", "streamlit.*", "plotly", "plotly.*", "numpy", "numpy.*"]
