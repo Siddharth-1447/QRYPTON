@@ -23,6 +23,11 @@ conditions, impact, and a minimal sanitized example.
 
 ## Dependency checks
 
+Upgrade a new virtual environment's bundled pip to version 26.2 or later before
+installing dependencies; older bootstrap versions have published advisories.
+The installation instructions, development container, Dockerfile, and CI perform
+this upgrade. Audit installed Python dependencies with `pip-audit` when updating them.
+
 Run `npm audit --omit=dev` for the dashboard runtime dependency tree and `npm audit`
 for its development tooling. The current ESLint chain includes the upstream
 [braces advisory GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm),

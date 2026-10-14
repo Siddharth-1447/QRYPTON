@@ -31,7 +31,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - name: Install application and development dependencies
-        run: python -m pip install '.[dev]'
+        run: |
+          python -m pip install --upgrade 'pip>=26.2'
+          python -m pip install '.[dev]'
       - name: Lint Python
         run: python -m ruff check .
       - name: Check Python types
@@ -43,6 +45,7 @@ jobs:
         run: |
           python -m pip wheel --no-deps --wheel-dir dist .
           python -m venv "$RUNNER_TEMP/qrypton-wheel-venv"
+          "$RUNNER_TEMP/qrypton-wheel-venv/bin/python" -m pip install --upgrade 'pip>=26.2'
           wheels=(dist/qrypton-*.whl)
           [[ ${#wheels[@]} -eq 1 && -f "${wheels[0]}" ]]
           "$RUNNER_TEMP/qrypton-wheel-venv/bin/python" -m pip install "${wheels[0]}[api]"

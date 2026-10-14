@@ -32,6 +32,7 @@ From the repository root in PowerShell:
 python -m venv .venv
 $python = ".\.venv\Scripts\python.exe"
 $qrypton = ".\.venv\Scripts\qrypton.exe"
+& $python -m pip install --upgrade "pip>=26.2"
 & $python -m pip install -e ".[dev]"
 & $qrypton --version
 Push-Location web
@@ -44,6 +45,7 @@ On Linux or macOS:
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
+python -m pip install --upgrade 'pip>=26.2'
 python -m pip install -e '.[dev]'
 qrypton --version
 npm --prefix web ci

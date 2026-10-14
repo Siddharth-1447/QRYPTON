@@ -13,7 +13,8 @@ COPY src/ ./src/
 COPY web/src/app/globals.css ./web/src/app/globals.css
 COPY web/public/fonts/ ./web/public/fonts/
 
-RUN python -m pip install --no-cache-dir ".[api,ui]" \
+RUN python -m pip install --no-cache-dir --upgrade "pip>=26.2" \
+    && python -m pip install --no-cache-dir ".[api,ui]" \
     && mkdir /data \
     && chown qrypton:qrypton /data
 

@@ -9,6 +9,7 @@ uploads, generated reports, and local audit snapshots out of commits.
 From the repository root:
 
 ```sh
+python -m pip install --upgrade 'pip>=26.2'
 python -m pip install -e '.[dev]'
 python -m ruff check .
 python -m mypy src

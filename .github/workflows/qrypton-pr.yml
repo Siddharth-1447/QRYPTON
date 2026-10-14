@@ -48,7 +48,9 @@ jobs:
           cache: pip
       - name: Install scanner
         if: steps.configuration.outputs.configured == 'true'
-        run: python -m pip install .
+        run: |
+          python -m pip install --upgrade 'pip>=26.2'
+          python -m pip install .
       # Restore only the baseline directory, avoiding a second source tree in the scan.
       - name: Restore trusted baseline
         if: steps.configuration.outputs.configured == 'true'
