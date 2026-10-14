@@ -6,7 +6,8 @@ from typing import Literal
 
 import streamlit as st
 
-from qrypton.contracts.enums import RiskLevel
+from qrypton.api.design_tokens import load_design_tokens
+from qrypton.contracts.enums import MoscaUrgency
 from qrypton.ui.contracts import DashboardRunView
 
 CriticalityLabel = Literal["low", "medium", "high", "critical", "unclassified"]
@@ -15,19 +16,19 @@ CriticalityLabel = Literal["low", "medium", "high", "critical", "unclassified"]
 def render_heatmap_view(view: DashboardRunView) -> None:
     """Render the Mosca urgency × business criticality heatmap from persisted cells."""
     st.subheader("Risk heatmap: Mosca urgency × business criticality")
-    st.caption("Cell counts are aggregated from persisted assessments only.")
-    st.info("Business criticality is not stored on current runs. Findings remain in Unclassified.")
+    st.caption(
+        "Rows are Mosca urgency; columns are business criticality. "
+        "Each finding appears in one persisted cell."
+    )
+    st.info(
+        "Rows are persisted per-finding Mosca urgency; columns are the business criticality "
+        "persisted for each finding. Not applicable, unknown, and unclassified values are "
+        "shown as distinct dimensions."
+    )
     cell_map = {
         (cell.mosca_urgency, cell.business_criticality): cell for cell in view.heatmap_cells
     }
-    urgency_rows = (
-        RiskLevel.CRITICAL,
-        RiskLevel.HIGH,
-        RiskLevel.MEDIUM,
-        RiskLevel.LOW,
-        RiskLevel.INFORMATIONAL,
-        RiskLevel.UNKNOWN,
-    )
+    urgency_rows = tuple(MoscaUrgency)
     crit_cols: tuple[CriticalityLabel, ...] = ("critical", "high", "medium", "low", "unclassified")
     col_labels = {
         "critical": "Critical",
@@ -56,7 +57,9 @@ def render_heatmap_view(view: DashboardRunView) -> None:
                 z=z_values,
                 x=[col_labels[column] for column in crit_cols],
                 y=[urgency.value for urgency in urgency_rows],
-                colorscale="Reds",
+                colorscale=[
+                    [step / 4, load_design_tokens()[f"heatmap-{step}"]] for step in range(5)
+                ],
                 hoverongaps=False,
             )
         )
@@ -76,7 +79,7 @@ def render_heatmap_view(view: DashboardRunView) -> None:
             format_func=lambda column: col_labels[column],
             index=4,
         )
-    cell = cell_map.get((RiskLevel(sel_urgency), sel_crit))
+    cell = cell_map.get((MoscaUrgency(sel_urgency), sel_crit))
     if cell and cell.finding_ids:
         st.dataframe([{"Finding ID": fid} for fid in cell.finding_ids], hide_index=True)
     else:

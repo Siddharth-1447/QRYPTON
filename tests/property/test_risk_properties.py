@@ -9,7 +9,7 @@ from qrypton.risk.schemas import BusinessContext, MoscaInput
 
 _years = st.floats(min_value=0, max_value=500, allow_nan=False, allow_infinity=False)
 _horizons = st.floats(min_value=0.01, max_value=500, allow_nan=False, allow_infinity=False)
-_severity = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+_urgency = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 _business = BusinessContext(
     data_sensitivity=3,
     system_criticality=3,
@@ -20,7 +20,7 @@ _business = BusinessContext(
 
 
 @given(x=_years, y=_years, increment=_years, z=_horizons)
-def test_increasing_x_never_decreases_final_severity(
+def test_changing_x_changes_only_temporal_urgency_without_finding_evidence(
     x: float, y: float, increment: float, z: float
 ) -> None:
     initial = evaluate_qrypton_risk(
@@ -32,11 +32,14 @@ def test_increasing_x_never_decreases_final_severity(
         ),
         _business,
     )
-    assert _severity[increased.risk_level] >= _severity[initial.risk_level]
+    assert increased.risk_level == initial.risk_level == "unknown"
+    assert (
+        _urgency[increased.explanation.urgency_tier] >= _urgency[initial.explanation.urgency_tier]
+    )
 
 
 @given(x=_years, y=_years, increment=_years, z=_horizons)
-def test_increasing_y_never_decreases_final_severity(
+def test_changing_y_changes_only_temporal_urgency_without_finding_evidence(
     x: float, y: float, increment: float, z: float
 ) -> None:
     initial = evaluate_qrypton_risk(
@@ -48,7 +51,10 @@ def test_increasing_y_never_decreases_final_severity(
         ),
         _business,
     )
-    assert _severity[increased.risk_level] >= _severity[initial.risk_level]
+    assert increased.risk_level == initial.risk_level == "unknown"
+    assert (
+        _urgency[increased.explanation.urgency_tier] >= _urgency[initial.explanation.urgency_tier]
+    )
 
 
 @given(x=_years, y=_years, z=_horizons)

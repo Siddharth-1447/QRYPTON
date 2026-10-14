@@ -10,11 +10,15 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 from qrypton.contracts.enums import (
     AlgorithmFamily,
+    AlgorithmIdentificationStatus,
     AlgorithmStatus,
     AssetKind,
     Criticality,
+    EvidenceCollectionMode,
     EvidenceKind,
+    EvidenceSurface,
     KeyKind,
+    MoscaUrgency,
     ObservationState,
     ProtocolLayer,
     RecommendationKind,
@@ -137,6 +141,9 @@ class Evidence(DomainModel):
     asset_id: EntityId
     scan_target_id: EntityId
     kind: EvidenceKind
+    surface: EvidenceSurface = EvidenceSurface.UNKNOWN
+    collection_mode: EvidenceCollectionMode = EvidenceCollectionMode.UNKNOWN
+    limitations: tuple[Annotated[str, Field(min_length=1, max_length=512)], ...] = ()
     location: EvidenceLocation
     raw_content_digest: Sha256Digest | None = None
     excerpt: Excerpt | None = None
@@ -225,16 +232,84 @@ class CryptoFinding(DomainModel):
     certificate: Observation[CertificateMetadata]
     protocol: Observation[ProtocolMetadata]
     library: Observation[LibraryMetadata]
+    algorithm_family: AlgorithmFamily | None = None
+    algorithm_variant: Annotated[str | None, Field(max_length=256)] = None
+    crypto_role: Annotated[str | None, Field(max_length=128)] = None
+    algorithm_identification_status: AlgorithmIdentificationStatus = (
+        AlgorithmIdentificationStatus.UNKNOWN
+    )
+    algorithm_identification_confidence: Confidence = 0.0
+    algorithm_identification_evidence: tuple[EntityId, ...] = ()
+    confidence_reasons: tuple[Annotated[str, Field(min_length=1, max_length=1024)], ...] = ()
+    identification_confidence: Confidence = 0.0
+    usage_confidence: Confidence = 0.0
+    mosca_x_data_lifetime_years: Annotated[float | None, Field(ge=0.0, le=10_000.0)] = None
+    mosca_y_migration_years: Annotated[float | None, Field(ge=0.0, le=10_000.0)] = None
+    mosca_x_source: Literal["finding", "asset", "scenario", "unknown"] = "unknown"
+    mosca_y_source: Literal["finding", "asset", "scenario", "unknown"] = "unknown"
     evidence_ids: Annotated[tuple[EntityId, ...], Field(min_length=1)]
     confidence: Confidence
     first_observed_at: UtcDateTime
     last_observed_at: UtcDateTime
     provenance: Provenance
+    correlation_provenance: Provenance | None = None
 
     @model_validator(mode="after")
     def validate_times(self) -> CryptoFinding:
         if self.last_observed_at < self.first_observed_at:
             raise ValueError("last_observed_at must not precede first_observed_at")
+        for value, source, label in (
+            (self.mosca_x_data_lifetime_years, self.mosca_x_source, "X"),
+            (self.mosca_y_migration_years, self.mosca_y_source, "Y"),
+        ):
+            if value is None and source != "unknown":
+                raise ValueError(f"Mosca {label} source requires a corresponding value")
+        if self.mosca_x_data_lifetime_years is not None and self.mosca_x_source == "unknown":
+            object.__setattr__(self, "mosca_x_source", "finding")
+        if self.mosca_y_migration_years is not None and self.mosca_y_source == "unknown":
+            object.__setattr__(self, "mosca_y_source", "finding")
+        algorithm = (
+            self.algorithm.value if self.algorithm.state is ObservationState.OBSERVED else None
+        )
+        updates: dict[str, object] = {}
+        if self.algorithm_family is None and algorithm is not None:
+            updates["algorithm_family"] = algorithm.family
+        if self.algorithm_variant is None and algorithm is not None:
+            updates["algorithm_variant"] = algorithm.canonical_name
+        if (
+            self.algorithm_identification_status is AlgorithmIdentificationStatus.UNKNOWN
+            and algorithm is not None
+        ):
+            updates["algorithm_identification_status"] = (
+                AlgorithmIdentificationStatus.IDENTIFIED
+                if algorithm.family is not AlgorithmFamily.UNKNOWN
+                and algorithm.canonical_name.casefold() != "unknown"
+                else AlgorithmIdentificationStatus.PARTIALLY_IDENTIFIED
+            )
+        if not self.algorithm_identification_evidence and algorithm is not None:
+            updates["algorithm_identification_evidence"] = self.algorithm.basis_evidence_ids
+        if (
+            algorithm is not None
+            and self.algorithm_identification_confidence == 0.0
+            and algorithm.family is not AlgorithmFamily.UNKNOWN
+        ):
+            updates["algorithm_identification_confidence"] = self.confidence
+        if self.identification_confidence == 0.0 and algorithm is not None:
+            identification_confidence = updates.get(
+                "algorithm_identification_confidence", self.algorithm_identification_confidence
+            )
+            if isinstance(identification_confidence, (int, float)):
+                updates["identification_confidence"] = float(identification_confidence)
+        if self.usage_confidence == 0.0:
+            updates["usage_confidence"] = self.confidence
+        if not self.confidence_reasons:
+            updates["confidence_reasons"] = (
+                "Finding confidence is supported by evidence: " + ", ".join(self.evidence_ids),
+            )
+        for field_name, update_value in updates.items():
+            # The validator computes updates across heterogeneous model fields.
+            # Pydantic validates each field before this immutable normalization.
+            object.__setattr__(self, field_name, update_value)
         return self
 
 
@@ -247,6 +322,10 @@ class BusinessContext(DomainModel):
     internet_exposed: Observation[bool]
     regulatory_scopes: tuple[NonEmptyText, ...] = ()
     owner_reference: Observation[Annotated[str, Field(max_length=256)]]
+    environment: Annotated[str | None, Field(default=None, max_length=64)] = None
+    migration_complexity: Annotated[str | None, Field(default=None, max_length=32)] = None
+    mosca_x_data_lifetime_years: Annotated[float | None, Field(ge=0.0, le=10_000.0)] = None
+    mosca_y_migration_years: Annotated[float | None, Field(ge=0.0, le=10_000.0)] = None
     provenance: Provenance
 
 
@@ -259,6 +338,14 @@ class RiskFactors(DomainModel):
     policy_profile_id: NonEmptyText
     policy_profile_version: NonEmptyText
     rationale: tuple[Annotated[str, Field(min_length=1, max_length=1024)], ...]
+    # Independent categorical dimensions. The numeric legacy factors above remain
+    # available for API compatibility; UNKNOWN means evidence was insufficient.
+    crypto_risk: RiskLevel = RiskLevel.UNKNOWN
+    quantum_risk: RiskLevel = RiskLevel.UNKNOWN
+    business_impact_risk: RiskLevel = RiskLevel.UNKNOWN
+    business_criticality: Criticality = Criticality.UNKNOWN
+    risk_taxonomy_version: Literal["1.0.0"] = "1.0.0"
+    priority_ruleset_version: Literal["1.0.0"] = "1.0.0"
 
 
 class RiskAssessment(DomainModel):
@@ -268,24 +355,44 @@ class RiskAssessment(DomainModel):
     business_context_id: EntityId | None = None
     score: Observation[RiskScore]
     level: RiskLevel
+    final_priority: RiskLevel = RiskLevel.UNKNOWN
+    mosca_urgency: MoscaUrgency = MoscaUrgency.UNKNOWN
+    mosca_applicable: Literal["yes", "no", "unknown"] = "unknown"
+    # Optional for historical run records written before assessment confidence existed.
+    context_completeness: Confidence | None = None
+    assessment_confidence: Confidence | None = None
     factors: RiskFactors
     assessed_at: UtcDateTime
     engine_name: NonEmptyText
     engine_version: ScannerVersion
     evidence_ids: tuple[EntityId, ...]
 
+    @model_validator(mode="after")
+    def preserve_legacy_priority(self) -> RiskAssessment:
+        if self.final_priority is RiskLevel.UNKNOWN and self.level is not RiskLevel.UNKNOWN:
+            object.__setattr__(self, "final_priority", self.level)
+        elif self.level is not self.final_priority:
+            raise ValueError("level and final_priority must match")
+        return self
+
 
 class PersistedMoscaEvaluation(DomainModel):
     """Structured Mosca timelines persisted with a run; not reconstructed from rationale text."""
 
     finding_id: EntityId
-    x_data_lifetime_years: Annotated[float, Field(ge=0.0, le=10_000.0)]
-    y_migration_years: Annotated[float, Field(ge=0.0, le=10_000.0)]
-    z_crqc_horizon_years: Annotated[float, Field(ge=0.0, le=10_000.0)]
-    required_security_years: Annotated[float, Field(ge=0.0, le=10_000.0)]
-    time_margin_years: Annotated[float, Field(ge=-10_000.0, le=10_000.0)]
-    exposure_score: Annotated[float, Field(ge=0.0, le=100.0)]
-    urgency: Literal["critical", "high", "medium", "low"]
+    x_data_lifetime_years: Annotated[float | None, Field(ge=0.0, le=10_000.0)]
+    y_migration_years: Annotated[float | None, Field(ge=0.0, le=10_000.0)]
+    z_crqc_horizon_years: Annotated[float | None, Field(ge=0.0, le=10_000.0)]
+    required_security_years: Annotated[float | None, Field(ge=0.0, le=20_000.0)]
+    time_margin_years: Annotated[float | None, Field(ge=-20_000.0, le=10_000.0)]
+    exposure_score: Annotated[float | None, Field(ge=0.0, le=100.0)]
+    urgency: Literal["critical", "high", "medium", "low", "not_applicable", "unknown"]
+    mosca_applicable: Literal["yes", "no", "unknown"] = "unknown"
+    x_source: str = "scenario"
+    y_source: str = "scenario"
+    z_source: str = "scenario"
+    reason: str = ""
+    mosca_ruleset_version: Literal["1.0.0"] = "1.0.0"
 
 
 class Recommendation(DomainModel):

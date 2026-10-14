@@ -13,10 +13,12 @@ from qrypton.contracts.enums import (
     AlgorithmFamily,
     AlgorithmStatus,
     EvidenceKind,
+    MoscaUrgency,
     ObservationState,
     RiskLevel,
     RunStatus,
 )
+from qrypton.contracts.evidence_quality import classify_finding_evidence
 from qrypton.contracts.models import (
     Algorithm,
     CryptoFinding,
@@ -31,6 +33,7 @@ from qrypton.contracts.models import (
 from qrypton.ui.contracts import (
     DashboardRunSummary,
     DashboardRunView,
+    EvidenceAuthenticity,
     ExecutivePosture,
     FindingDetail,
     InventoryRow,
@@ -41,13 +44,13 @@ from qrypton.ui.contracts import (
 from qrypton.ui.provider import DashboardDataProvider
 
 CriticalityColumn = Literal["low", "medium", "high", "critical", "unclassified"]
-_URGENCY_TIERS: tuple[RiskLevel, ...] = (
-    RiskLevel.CRITICAL,
-    RiskLevel.HIGH,
-    RiskLevel.MEDIUM,
-    RiskLevel.LOW,
-    RiskLevel.INFORMATIONAL,
-    RiskLevel.UNKNOWN,
+_URGENCY_TIERS: tuple[MoscaUrgency, ...] = (
+    MoscaUrgency.CRITICAL,
+    MoscaUrgency.HIGH,
+    MoscaUrgency.MEDIUM,
+    MoscaUrgency.LOW,
+    MoscaUrgency.NOT_APPLICABLE,
+    MoscaUrgency.UNKNOWN,
 )
 _CRITICALITY_COLUMNS: tuple[CriticalityColumn, ...] = (
     "low",
@@ -109,7 +112,9 @@ def _build_mock_data(
                 "z": 8.0,
                 "req": 13.0,
                 "margin": -5.0,
-                "score": 95.0,
+                "score": 100.0,
+                "applicability": "yes",
+                "urgency": "critical",
             },
         },
         {
@@ -140,9 +145,11 @@ def _build_mock_data(
                 "x": 6.0,
                 "y": 2.0,
                 "z": 10.0,
-                "req": 8.0,
-                "margin": 2.0,
-                "score": 78.0,
+                "req": None,
+                "margin": None,
+                "score": None,
+                "applicability": "no",
+                "urgency": "not_applicable",
             },
         },
         {
@@ -173,9 +180,11 @@ def _build_mock_data(
                 "x": 3.0,
                 "y": 1.0,
                 "z": 10.0,
-                "req": 4.0,
-                "margin": 6.0,
-                "score": 55.0,
+                "req": None,
+                "margin": None,
+                "score": None,
+                "applicability": "no",
+                "urgency": "not_applicable",
             },
         },
         {
@@ -206,9 +215,11 @@ def _build_mock_data(
                 "x": 2.0,
                 "y": 1.0,
                 "z": 12.0,
-                "req": 3.0,
-                "margin": 9.0,
-                "score": 25.0,
+                "req": None,
+                "margin": None,
+                "score": None,
+                "applicability": "no",
+                "urgency": "not_applicable",
             },
         },
         {
@@ -239,9 +250,11 @@ def _build_mock_data(
                 "x": 10.0,
                 "y": 0.0,
                 "z": 15.0,
-                "req": 10.0,
-                "margin": 5.0,
-                "score": 5.0,
+                "req": None,
+                "margin": None,
+                "score": None,
+                "applicability": "no",
+                "urgency": "not_applicable",
             },
         },
     ]
@@ -307,6 +320,13 @@ def _build_mock_data(
             provenance=provenance,
         )
 
+        mosca_data = item["mosca"]  # type: ignore[index]
+        applicability = mosca_data["applicability"]
+        mosca_urgency = MoscaUrgency(mosca_data["urgency"])
+        mosca_exposure_score = mosca_data["score"]
+        required_security_years = mosca_data["req"]
+        time_margin_years = mosca_data["margin"]
+
         assessment = RiskAssessment(
             id=item["assess_id"],  # type: ignore[arg-type]
             tenant_id=tenant_id,
@@ -317,6 +337,8 @@ def _build_mock_data(
                 basis_evidence_ids=(ev_id,),
             ),
             level=item["risk_level"],  # type: ignore[arg-type]
+            mosca_urgency=mosca_urgency,
+            mosca_applicable=applicability,
             factors=RiskFactors(
                 cryptographic_obsolescence=Observation(state=ObservationState.UNKNOWN),
                 quantum_exposure=Observation(
@@ -330,8 +352,8 @@ def _build_mock_data(
                 policy_profile_id="nist-pqc-v1",
                 policy_profile_version="1.0.0",
                 rationale=(
-                    f"Mosca evaluation: X={item['mosca']['x']}y, Y={item['mosca']['y']}y, "  # type: ignore[index]
-                    f"Z={item['mosca']['z']}y. Urgency: {item['risk_level'].value}.",  # type: ignore[union-attr]
+                    f"Mosca applicability: {applicability}; urgency: {mosca_urgency.value}; "
+                    f"X={mosca_data['x']}y, Y={mosca_data['y']}y, Z={mosca_data['z']}y.",
                 ),
             ),
             assessed_at=observed_time,
@@ -382,6 +404,7 @@ def _build_mock_data(
                 key_size_bits=item["key_size"],  # type: ignore[arg-type]
                 lifecycle_status=item["status"].value,  # type: ignore[union-attr]
                 risk_level=item["risk_level"],  # type: ignore[arg-type]
+                risk_assessment_state="assessed",
                 risk_score=item["risk_score"],  # type: ignore[arg-type]
                 confidence=item["confidence"],  # type: ignore[arg-type]
                 evidence_count=1,
@@ -390,17 +413,17 @@ def _build_mock_data(
             )
         )
 
-        mosca_data = item["mosca"]  # type: ignore[index]
         mosca_points.append(
             MoscaPoint(
                 finding_id=fid,
-                urgency=item["risk_level"],  # type: ignore[arg-type]
-                exposure_score=mosca_data["score"],  # type: ignore[index]
+                urgency=mosca_urgency,
+                mosca_applicable=applicability,
+                exposure_score=mosca_exposure_score,
                 x_data_lifetime_years=mosca_data["x"],  # type: ignore[index]
                 y_migration_years=mosca_data["y"],  # type: ignore[index]
                 z_crqc_horizon_years=mosca_data["z"],  # type: ignore[index]
-                required_security_years=mosca_data["req"],  # type: ignore[index]
-                time_margin_years=mosca_data["margin"],  # type: ignore[index]
+                required_security_years=required_security_years,
+                time_margin_years=time_margin_years,
                 timeline_state="persisted",
             )
         )
@@ -418,20 +441,30 @@ def _build_mock_data(
             )
         )
 
+        quality, summary, confidence_applicable = classify_finding_evidence(
+            (evidence,), scanner_name=provenance.scanner_name
+        )
         details_map[fid] = FindingDetail(
             finding=finding,
             assessment=assessment,
             recommendations=(rec,),
             evidence_provenance=(evidence,),
             failures=(),
+            evidence_authenticity=EvidenceAuthenticity(
+                quality=quality,
+                summary=summary,
+                confidence_applicable=confidence_applicable,
+            ),
         )
 
     # Build heatmap grid (urgency x business_criticality)
-    heatmap_dict: dict[tuple[RiskLevel, CriticalityColumn], list[str]] = {
+    heatmap_dict: dict[tuple[MoscaUrgency, CriticalityColumn], list[str]] = {
         (urgency, column): [] for urgency in _URGENCY_TIERS for column in _CRITICALITY_COLUMNS
     }
+    mosca_by_finding = {point.finding_id: point for point in mosca_points}
     for item in raw_findings:
-        heatmap_dict[(item["risk_level"], "unclassified")].append(item["id"])  # type: ignore[index]
+        point = mosca_by_finding[item["id"]]
+        heatmap_dict[(point.urgency, "unclassified")].append(item["id"])
 
     heatmap_cells = tuple(
         RiskHeatmapCell(
@@ -465,6 +498,7 @@ def _build_mock_data(
         informational_findings_count=sum(
             1 for i in raw_findings if i["risk_level"] == RiskLevel.INFORMATIONAL
         ),
+        unknown_findings_count=0,
         unassessed_findings_count=0,
         run_status=RunStatus.COMPLETED,
         scanner_failed_count=0,

@@ -108,7 +108,7 @@ the release dashboard. The mock provider is test/demo scaffolding only.
 ## Remove before release
 
 Remove or disable any screenshot, metric, or script sourced from
-`MockDashboardDataProvider`, the checked-in `qrypton.db`/`qrypton_demo.db`, or
+`MockDashboardDataProvider`, local `qrypton.db`/`qrypton_demo.db` files, or
 the Next.js prototype. Remove claims that the CLI accepts business context or
 that a failed scanner is safely covered by UI fallback. These artifacts are
 unstable or not evidence from the deterministic corpus.

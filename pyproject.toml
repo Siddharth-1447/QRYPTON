@@ -12,8 +12,9 @@ license = { text = "Proprietary" }
 authors = [{ name = "QRYPTON" }]
 dependencies = [
   "jsonschema>=4.23,<5",
-  "pathspec>=0.12,<1",
+  "pathspec>=1.1.1,<2",
   "pydantic>=2.10,<3",
+  "reportlab>=4.0,<6",
 ]
 
 [project.optional-dependencies]
@@ -27,12 +28,13 @@ dev = [
   "httpx>=0.28.1,<0.29",
   "hypothesis>=6.115,<7",
   "mypy>=1.13,<2",
-  "pytest>=8.3,<9",
+  "pytest>=9.0.3,<10",
   "ruff>=0.8,<1",
 ]
 ui = [
   "plotly>=5.24,<6",
   "streamlit>=1.40,<2",
+  "urllib3>=2.8.0,<3",
 ]
 
 [project.scripts]
@@ -45,6 +47,10 @@ dev = ["qrypton[dev]"]
 packages = ["src/qrypton"]
 artifacts = ["src/qrypton/exporters/schemas/cyclonedx/*.json"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"web/src/app/globals.css" = "qrypton/api/globals.css"
+"web/public/fonts" = "qrypton/api/fonts"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
@@ -55,7 +61,7 @@ addopts = "-ra"
 target-version = "py311"
 line-length = 100
 # Audit scratch space, generated artifacts, and the deliberately vulnerable scanner sample are not maintained code.
-extend-exclude = ["qa_audit", "tmp", "scratch", "src/qrypton/sample_payment_app"]
+extend-exclude = ["qa_audit", "tmp", "scratch", "demo", "demo_corpus", "src/qrypton/sample_payment_app"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

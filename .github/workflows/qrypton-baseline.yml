@@ -6,54 +6,116 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: qrypton-baseline-${{ github.repository }}
+  cancel-in-progress: false
 
 jobs:
   baseline:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
     env:
       QRYPTON_ID_SECRET: ${{ secrets.QRYPTON_ID_SECRET }}
+      QRYPTON_TENANT_ID: ${{ vars.QRYPTON_TENANT_ID }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
     steps:
+      - name: Check optional scan configuration
+        id: configuration
+        shell: bash
+        run: |
+          if [[ -n "$QRYPTON_ID_SECRET" && -n "$QRYPTON_TENANT_ID" ]]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Baseline refresh skipped. Configure repository secret QRYPTON_ID_SECRET and variable QRYPTON_TENANT_ID to enable it. Standard CI checks run independently."
+          fi
       - uses: actions/checkout@v4
+        if: steps.configuration.outputs.configured == 'true'
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ github.event.repository.default_branch }}
       - uses: actions/setup-python@v5
+        if: steps.configuration.outputs.configured == 'true'
         with:
           python-version: '3.11'
-          cache: 'pip'
-      - run: pip install .
-      - name: Generate baseline scan
-        run: |-
+          cache: pip
+      - name: Install scanner
+        if: steps.configuration.outputs.configured == 'true'
+        run: python -m pip install .
+      - name: Prepare trusted baseline input
+        if: steps.configuration.outputs.configured == 'true'
+        shell: bash
+        run: |
           mkdir -p .qrypton
-          qrypton scan . \
-            --tenant-id '${{ vars.QRYPTON_TENANT_ID }}' \
-            --asset-kind repository \
-            --asset-reference '${{ github.repository }}' \
-            --asset-name '${{ github.event.repository.name }}' \
-            --id-secret-env QRYPTON_ID_SECRET \
-            --db qrypton-baseline.sqlite3 \
-            --output .qrypton/scan.cbom.json \
-            --quiet
-      - name: Build baseline CI artifact
-        run: |-
+          if [[ -f .qrypton/baseline.ci.json ]]; then
+            cp .qrypton/baseline.ci.json "$RUNNER_TEMP/qrypton-baseline-input.json"
+          else
+            printf '{"schema_version":"1.0","inventory":{}}\n' > "$RUNNER_TEMP/qrypton-baseline-input.json"
+          fi
+      - name: Generate baseline CI artifact
+        if: steps.configuration.outputs.configured == 'true'
+        shell: bash
+        run: |
           qrypton ci scan . \
-            --tenant-id '${{ vars.QRYPTON_TENANT_ID }}' \
+            --tenant-id "$QRYPTON_TENANT_ID" \
             --asset-kind repository \
-            --asset-reference '${{ github.repository }}' \
-            --asset-name '${{ github.event.repository.name }}' \
+            --asset-reference "$GITHUB_REPOSITORY" \
+            --asset-name "${GITHUB_REPOSITORY##*/}" \
             --id-secret-env QRYPTON_ID_SECRET \
-            --baseline .qrypton/baseline.ci.json \
-            --db qrypton-baseline.sqlite3 \
+            --baseline "$RUNNER_TEMP/qrypton-baseline-input.json" \
+            --db "$RUNNER_TEMP/qrypton-baseline.sqlite3" \
             --cbom-output .qrypton/baseline.cbom.json \
             --ci-output .qrypton/baseline.ci.json \
             --max-risk critical \
-            --allow-scanner-failure \
-            --quiet \
-            || true
+            --quiet
+      - name: Validate and sanitize baseline artifacts
+        if: steps.configuration.outputs.configured == 'true'
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          from qrypton.ci.report import dump_ci_result
+          from qrypton.ci.schema import CiResult
+          from qrypton.exporters.cyclonedx_1_6 import (
+              CycloneDx16CbomExporter,
+              sanitize_persisted_cbom,
+          )
+
+          report = Path(".qrypton/baseline.ci.json")
+          cbom = Path(".qrypton/baseline.cbom.json")
+          try:
+              result = CiResult.model_validate_json(report.read_bytes())
+              if (
+                  result.exit_code != 0
+                  or result.status != "completed"
+                  or not result.policy.passed
+                  or result.scanner.failed != 0
+                  or result.scanner.partial != 0
+              ):
+                  raise ValueError("Incomplete baseline")
+              report.write_bytes(dump_ci_result(result.model_dump(mode="json")))
+              sanitized = sanitize_persisted_cbom(cbom.read_bytes())
+              CycloneDx16CbomExporter().validate(sanitized)
+              cbom.write_bytes(sanitized)
+          except (OSError, ValueError):
+              raise SystemExit("Baseline artifacts are invalid or the scan is incomplete.") from None
+          print("Validated complete scan and sanitized baseline artifacts.")
+          PY
       - name: Commit updated baseline
+        if: steps.configuration.outputs.configured == 'true'
+        shell: bash
         run: |
           git config user.name "qrypton[bot]"
           git config user.email "qrypton[bot]@users.noreply.github.com"
-          git add .qrypton/baseline.ci.json .qrypton/baseline.cbom.json
-          git diff --cached --quiet || git commit -m "chore: update QRYPTON cryptographic baseline"
-          git push
+          git add -- .qrypton/baseline.ci.json .qrypton/baseline.cbom.json
+          if git diff --cached --quiet; then
+            echo "Baseline is unchanged."
+          else
+            git commit -m "chore: update QRYPTON cryptographic baseline"
+            git push origin "HEAD:$DEFAULT_BRANCH"
+          fi

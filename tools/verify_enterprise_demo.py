@@ -40,13 +40,13 @@ def main() -> int:
     if any(not finding.evidence_ids for finding in run.findings):
         raise SystemExit("finding without evidence")
     expected_paths = {"payment_service.py", "edge_gateway.cpp", "modern_service.py"}
-    corpus_root = Path("demo/enterprise")
+    corpus_root = Path(__file__).resolve().parents[1] / "demo" / "enterprise"
+    if any(not (corpus_root / path).is_file() for path in expected_paths):
+        raise SystemExit("enterprise corpus is incomplete")
     corpus_digests = {
         path: hashlib.sha256((corpus_root / path).read_bytes()).hexdigest()
         for path in sorted(expected_paths)
     }
-    if any(not (corpus_root / path).is_file() for path in expected_paths):
-        raise SystemExit("enterprise corpus is incomplete")
     scanner_names = {item.scanner_name for item in run.scanner_results}
     if "qrypton-source" not in scanner_names:
         raise SystemExit("source scanner did not complete")

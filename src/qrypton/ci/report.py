@@ -108,6 +108,7 @@ def build_ci_result(
         ExitCode.SCANNER_FAILURE: "scanner_failure",
         ExitCode.BASELINE_ERROR: "baseline_error",
         ExitCode.ARTIFACT_ERROR: "artifact_error",
+        ExitCode.RUN_CONFLICT: "run_conflict",
     }
 
     return {

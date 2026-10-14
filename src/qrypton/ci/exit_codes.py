@@ -20,3 +20,4 @@ class ExitCode(IntEnum):
     SCANNER_FAILURE = 4
     BASELINE_ERROR = 5
     ARTIFACT_ERROR = 6
+    RUN_CONFLICT = 7

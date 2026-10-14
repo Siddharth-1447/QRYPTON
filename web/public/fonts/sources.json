@@ -1,0 +1,22 @@
+{
+  "space-grotesk-latin-400-normal.woff2": {
+    "source": "@fontsource/space-grotesk@5.3.0",
+    "sha256": "65fd17fcbd2e2f522940b5f67ead3d23329e02891aa5495e74d11a499c0b0673"
+  },
+  "space-grotesk-latin-500-normal.woff2": {
+    "source": "@fontsource/space-grotesk@5.3.0",
+    "sha256": "1b1a8131d9edf975d9decee81e2f2bf504812f7a4f498e5500f28a613e22e64c"
+  },
+  "space-grotesk-latin-700-normal.woff2": {
+    "source": "@fontsource/space-grotesk@5.3.0",
+    "sha256": "35f8aec56cfd5cbfdb03cc68733a54a0b05bb3617ffcd5fd332badc0b045ca55"
+  },
+  "space-mono-latin-400-normal.woff2": {
+    "source": "@fontsource/space-mono@5.3.0",
+    "sha256": "fb4a81a2d0a893e5c38c394a7e716a1cef0b24610a0af49c96f6d529bd66bf2b"
+  },
+  "space-mono-latin-700-normal.woff2": {
+    "source": "@fontsource/space-mono@5.3.0",
+    "sha256": "2d46bd159b53f55c41167a4f1540a074649464194fd1e416f5b4694a6c0f282c"
+  }
+}

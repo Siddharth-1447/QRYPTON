@@ -5,6 +5,7 @@ from pathlib import Path
 
 from pytest import CaptureFixture, MonkeyPatch
 
+from qrypton.ci.exit_codes import ExitCode
 from qrypton.cli import main
 
 
@@ -36,7 +37,9 @@ def test_scan_persists_and_reports_a_deterministic_cbom(
         "--output",
         str(output),
     ]
-    assert main(arguments) == 0
+    # SHA-1 is High crypto risk under taxonomy 1.0.0, so the default risk gate
+    # reports a policy violation while still completing and persisting the scan.
+    assert main(arguments) == ExitCode.POLICY_VIOLATION
     run_id = json.loads(capsys.readouterr().out)["run_id"]
     report = tmp_path / "second.cdx.json"
     assert (
@@ -62,9 +65,13 @@ def test_scan_persists_and_reports_a_deterministic_cbom(
     assert stored is not None
     assert len(stored.mosca_evaluations) == len(stored.findings)
     for evaluation in stored.mosca_evaluations:
-        assert evaluation.required_security_years == (
-            evaluation.x_data_lifetime_years + evaluation.y_migration_years
-        )
+        if evaluation.mosca_applicable == "yes":
+            assert evaluation.required_security_years == (
+                evaluation.x_data_lifetime_years + evaluation.y_migration_years
+            )
+        else:
+            assert evaluation.required_security_years is None
+            assert evaluation.exposure_score is None
 
 
 def test_ci_scan_emits_sanitized_delta_and_artifacts(

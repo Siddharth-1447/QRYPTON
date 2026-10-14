@@ -1,0 +1,118 @@
+name: Repository checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install application and development dependencies
+        run: python -m pip install '.[dev]'
+      - name: Lint Python
+        run: python -m ruff check .
+      - name: Check Python types
+        run: python -m mypy src
+      - name: Run backend tests
+        run: python -m pytest
+      - name: Build wheel and install in an isolated environment
+        shell: bash
+        run: |
+          python -m pip wheel --no-deps --wheel-dir dist .
+          python -m venv "$RUNNER_TEMP/qrypton-wheel-venv"
+          wheels=(dist/qrypton-*.whl)
+          [[ ${#wheels[@]} -eq 1 && -f "${wheels[0]}" ]]
+          "$RUNNER_TEMP/qrypton-wheel-venv/bin/python" -m pip install "${wheels[0]}[api]"
+      - name: Smoke test the installed wheel and packaged resources
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        run: |
+          "$RUNNER_TEMP/qrypton-wheel-venv/bin/qrypton" --version
+          "$RUNNER_TEMP/qrypton-wheel-venv/bin/python" - <<'PY'
+          from qrypton.api.app import app
+          from qrypton.api.report_fonts import register_report_fonts
+          from qrypton.exporters.cyclonedx_1_6 import CycloneDx16CbomExporter
+
+          assert app is not None
+          CycloneDx16CbomExporter()
+          fonts = register_report_fonts()
+          assert "sans-400" in fonts and "mono-700" in fonts
+          print("Wheel imports, bundled schemas, design tokens, and report fonts verified.")
+          PY
+  web:
+    name: Web checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Lint web application
+        run: npm run lint
+      - name: Run web tests
+        run: npm test
+      - name: Check TypeScript
+        run: npm run typecheck
+      - name: Build production application
+        run: npm run build
+  container:
+    name: Container checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build application container
+        run: docker build -t qrypton-ci .
+      - name: Smoke test container entrypoint
+        run: docker run --rm qrypton-ci --version
+      - name: Verify non-root execution and packaged API resources
+        shell: bash
+        run: |
+          docker run --rm --entrypoint python qrypton-ci -c '
+          import os
+          from qrypton.api.app import app
+          from qrypton.api.report_fonts import register_report_fonts
+          from qrypton.exporters.cyclonedx_1_6 import CycloneDx16CbomExporter
+
+          assert os.geteuid() != 0
+          assert app is not None
+          CycloneDx16CbomExporter()
+          fonts = register_report_fonts()
+          assert "sans-400" in fonts and "mono-700" in fonts
+          print("Non-root container, bundled schemas, design tokens, and report fonts verified.")
+          '

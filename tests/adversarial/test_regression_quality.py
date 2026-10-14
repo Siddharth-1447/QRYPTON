@@ -57,9 +57,14 @@ def test_ground_truth_precision_recall_f1_quality_gate(tmp_path: Path) -> None:
 
     suite = {
         "rsa_test.py": "from Crypto.PublicKey import RSA\nkey = RSA.generate(2048)\n",
-        "aes_ecb_test.py": "from Crypto.Cipher import AES\ncipher = AES.new(b'1234567890123456', AES.MODE_ECB)\n",
+        "aes_ecb_test.py": (
+            "from Crypto.Cipher import AES\n"
+            "cipher = AES.new(b'1234567890123456', AES.MODE_ECB)\n"
+        ),
         "hash_md5_test.py": "import hashlib\nh = hashlib.md5(b'data').hexdigest()\n",
-        "clean_code.py": "def calculate_total(items):\n    return sum(item.price for item in items)\n",
+        "clean_code.py": (
+            "def calculate_total(items):\n    return sum(item.price for item in items)\n"
+        ),
     }
 
     for path, content in suite.items():
@@ -71,7 +76,11 @@ def test_ground_truth_precision_recall_f1_quality_gate(tmp_path: Path) -> None:
 
     results = {}
     for sf in traversal.files:
-        rule_ids = [obs.rule_id for obs in analyze_python_ast(sf, policy=policy, limits=limits) if obs.rule_id]
+        rule_ids = [
+            obs.rule_id
+            for obs in analyze_python_ast(sf, policy=policy, limits=limits)
+            if obs.rule_id
+        ]
         results[sf.relative_path] = set(rule_ids)
 
     # Building expected map from dynamic evaluation to ensure accurate FP/FN calculation

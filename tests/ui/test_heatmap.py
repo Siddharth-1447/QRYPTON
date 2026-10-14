@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from qrypton.application.schemas import PolicyOutcome, RunResult
-from qrypton.contracts.enums import RiskLevel, RunStatus
+from qrypton.contracts.enums import MoscaUrgency, RiskLevel, RunStatus
 from qrypton.storage.sqlite import SqliteRunStore
 from qrypton.ui.sqlite_provider import SqliteDashboardDataProvider
 from tests.ui.conftest import sample_evidence, sample_finding
@@ -23,16 +23,17 @@ def test_heatmap_aggregation_unclassified_business_criticality(
     assert active
     for cell in active:
         assert cell.business_criticality == "unclassified"
-        assert cell.mosca_urgency is not RiskLevel.LOW
+        assert cell.mosca_urgency is not MoscaUrgency.LOW
     crit = next(
         cell
         for cell in view.heatmap_cells
-        if cell.mosca_urgency == RiskLevel.CRITICAL and cell.business_criticality == "unclassified"
+        if cell.mosca_urgency is MoscaUrgency.CRITICAL
+        and cell.business_criticality == "unclassified"
     )
     high = next(
         cell
         for cell in view.heatmap_cells
-        if cell.mosca_urgency == RiskLevel.HIGH and cell.business_criticality == "unclassified"
+        if cell.mosca_urgency is MoscaUrgency.HIGH and cell.business_criticality == "unclassified"
     )
     assert crit.finding_count == 1
     assert high.finding_count == 1
@@ -62,8 +63,21 @@ def test_heatmap_unassessed_finding_uses_unknown_urgency(tmp_path: Path) -> None
     unknown = next(
         cell
         for cell in view.heatmap_cells
-        if cell.mosca_urgency == RiskLevel.UNKNOWN and cell.business_criticality == "unclassified"
+        if cell.mosca_urgency is MoscaUrgency.UNKNOWN
+        and cell.business_criticality == "unclassified"
     )
     assert unknown.finding_ids == (finding_id,)
     assert view.inventory[0].risk_level == RiskLevel.UNKNOWN
+    assert view.inventory[0].risk_assessment_state == "unassessed"
     assert view.posture.unassessed_findings_count == 1
+    assert view.posture.unknown_findings_count == 0
+    assert (
+        view.posture.critical_findings_count
+        + view.posture.high_findings_count
+        + view.posture.medium_findings_count
+        + view.posture.low_findings_count
+        + view.posture.informational_findings_count
+        + view.posture.unknown_findings_count
+        + view.posture.unassessed_findings_count
+        == view.posture.total_findings
+    )

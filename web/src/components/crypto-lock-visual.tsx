@@ -1,27 +1,19 @@
 "use client";
 
-import { useState } from "react";
-
 interface CryptoLockVisualProps {
   compact?: boolean;
   navbar?: boolean;
 }
 
-/** Minimal cryptographic-cube mark, cursor-responsive without a raster/WebGL dependency. */
+/** Existing product mark, kept static to reserve motion for user feedback. */
 export function CryptoLockVisual({ compact = false, navbar = false }: CryptoLockVisualProps) {
-  const [rotation, setRotation] = useState({ x: 0, y: 0 });
   return (
     <div
       className={`crypto-cube-stage ${compact ? "crypto-cube-stage-compact" : ""} ${navbar ? "crypto-cube-stage-navbar" : ""}`}
-      onMouseMove={(event) => {
-        const box = event.currentTarget.getBoundingClientRect();
-        setRotation({ x: ((event.clientY - box.top) / box.height - .5) * -15, y: ((event.clientX - box.left) / box.width - .5) * 18 });
-      }}
-      onMouseLeave={() => setRotation({ x: 0, y: 0 })}
       role="img"
-      aria-label="Interactive cryptographic cube visual"
+      aria-label="QRYPTON cryptographic cube"
     >
-      <svg viewBox="0 0 320 250" aria-hidden="true" style={{ transform: `rotateX(${rotation.x}deg) rotateY(${rotation.y}deg)` }}>
+      <svg viewBox="0 0 320 250" aria-hidden="true">
         <g className="crypto-cube-lines" fill="none" stroke="currentColor" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round">
           <path d="M181 31v100l81 47V78z" fill="currentColor" fillOpacity=".45" />
           <path d="M181 31 262 78l-81 47-81-47z" fill="currentColor" fillOpacity=".92" />

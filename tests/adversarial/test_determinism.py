@@ -31,7 +31,7 @@ def _limits(*, max_file_count: int = 100) -> ScanLimits:
 
 
 def test_source_traversal_path_ordering_is_deterministic(tmp_path: Path) -> None:
-    """iter_source_files must produce identical, sorted file listings regardless of creation order."""
+    """Source files stay identically sorted regardless of creation order."""
     root = tmp_path / "repo"
     root.mkdir()
 
@@ -54,7 +54,7 @@ def test_source_traversal_path_ordering_is_deterministic(tmp_path: Path) -> None
 
 
 def test_deterministic_risk_evaluator_repeated_runs() -> None:
-    """evaluate_qrypton_risk produces identical risk scores and tiers across multiple invocations."""
+    """Risk evaluation produces identical scores and tiers across invocations."""
     mosca = MoscaInput(x_data_lifetime_years=10.0, y_migration_years=5.0, z_crqc_horizon_years=12.0)
     business = BusinessContext(
         data_sensitivity=4,
@@ -67,7 +67,9 @@ def test_deterministic_risk_evaluator_repeated_runs() -> None:
     runs = []
     for _ in range(10):
         result = evaluate_qrypton_risk(mosca, business)
-        runs.append((result.risk_level, result.explanation.urgency_tier, result.explanation.urgency_ratio))
+        runs.append(
+            (result.risk_level, result.explanation.urgency_tier, result.explanation.urgency_ratio)
+        )
 
     first_run = runs[0]
     for run in runs[1:]:

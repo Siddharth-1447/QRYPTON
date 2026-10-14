@@ -54,7 +54,11 @@ def render_finding_detail_view(
         st.markdown(f"**Asset ID:** `{finding.asset_id}`")
         st.markdown(f"**Scan target ID:** `{finding.scan_target_id}`")
     with col3:
-        st.markdown(f"**Confidence:** `{finding.confidence}`")
+        confidence_note = ""
+        auth = detail.evidence_authenticity
+        if auth is not None and not auth.confidence_applicable:
+            confidence_note = " (identifier-match only — n/a vs observed evidence)"
+        st.markdown(f"**Confidence:** `{finding.confidence}`{confidence_note}")
         st.markdown(f"**First observed:** `{finding.first_observed_at.isoformat()}`")
     if finding.algorithm.state == ObservationState.OBSERVED and finding.algorithm.value:
         algorithm = finding.algorithm.value
@@ -73,7 +77,7 @@ def render_finding_detail_view(
     st.markdown("### Persisted risk assessment")
     if detail.assessment:
         assessment = detail.assessment
-        r_col1, r_col2, r_col3 = st.columns(3)
+        r_col1, r_col2, r_col3, r_col4 = st.columns(4)
         with r_col1:
             st.metric("Risk level", assessment.level.value)
         with r_col2:
@@ -84,9 +88,35 @@ def render_finding_detail_view(
             )
             st.metric("Risk score", score_val if score_val is not None else "—")
         with r_col3:
-            st.metric("Engine", f"{assessment.engine_name} {assessment.engine_version}")
+            st.metric("Business criticality", detail.business_criticality)
+        with r_col4:
+            st.metric("Final priority", assessment.final_priority.value)
     else:
         st.info("No risk assessment recorded for this finding.")
+
+    st.markdown("### Mosca urgency (separate from final risk)")
+    if detail.mosca is not None:
+        m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+        with m_col1:
+            st.metric("Mosca urgency", detail.mosca.urgency.value)
+        with m_col2:
+            st.metric("Applicability", detail.mosca.mosca_applicable)
+        with m_col3:
+            st.metric("Timeline state", detail.mosca.timeline_state)
+        with m_col4:
+            st.metric(
+                "Time margin (years)",
+                detail.mosca.time_margin_years
+                if detail.mosca.time_margin_years is not None
+                else "Unknown",
+            )
+        st.caption(
+            f"X data lifetime: {detail.mosca.x_data_lifetime_years}; "
+            f"Y migration duration: {detail.mosca.y_migration_years}; "
+            f"Z planning horizon: {detail.mosca.z_crqc_horizon_years}."
+        )
+    else:
+        st.info("No persisted Mosca result is available for this finding.")
 
     st.markdown("### Recommendations")
     if detail.recommendations:
@@ -112,22 +142,37 @@ def render_finding_detail_view(
             st.warning(blocker)
 
     st.markdown("### Safe evidence provenance")
+    authenticity = detail.evidence_authenticity
+    if authenticity is not None:
+        if authenticity.quality == "inferred":
+            st.warning(
+                f"⚠️ Inferred evidence — {authenticity.summary}. "
+                "No key material, registry contents, or target bytes were inspected."
+            )
+        else:
+            st.success(f"✅ Direct evidence — {authenticity.summary}.")
+        if not authenticity.confidence_applicable:
+            st.caption(
+                "Confidence is not applicable here: the score below reflects "
+                "identifier-match uncertainty, not inspected cryptographic material."
+            )
     if detail.evidence_provenance:
-        st.dataframe(
-            [
+        rows = []
+        for evidence in detail.evidence_provenance:
+            confidence_text = f"{evidence.confidence:.0%}"
+            if authenticity is not None and not authenticity.confidence_applicable:
+                confidence_text += " (identifier-match only — n/a vs observed)"
+            rows.append(
                 {
                     "Evidence ID": evidence.id,
                     "Kind": evidence.kind.value,
-                    "Confidence": evidence.confidence,
+                    "Confidence": confidence_text,
                     "Scanner": evidence.provenance.scanner_name,
                     "Scanner version": evidence.provenance.scanner_version,
                     "Observed at": evidence.provenance.observed_at.isoformat(),
                 }
-                for evidence in detail.evidence_provenance
-            ],
-            use_container_width=True,
-            hide_index=True,
-        )
+            )
+        st.dataframe(rows, use_container_width=True, hide_index=True)
     else:
         st.write("No evidence records linked to this finding.")
     if detail.failures:

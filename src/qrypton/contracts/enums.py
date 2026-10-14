@@ -47,6 +47,27 @@ class EvidenceKind(StrEnum):
     USER_ASSERTION = "user_assertion"
 
 
+class EvidenceSurface(StrEnum):
+    """Discovery surface that produced a canonical evidence record."""
+
+    SOURCE = "source"
+    BINARY = "binary"
+    LIBRARY = "library"
+    CONTAINER = "container"
+    KMS = "kms"
+    API = "api"
+    UNKNOWN = "unknown"
+
+
+class EvidenceCollectionMode(StrEnum):
+    """How QRYPTON obtained evidence; this must never overstate live access."""
+
+    STATIC_ARTIFACT = "static_artifact"
+    STATIC_IDENTIFIER = "static_identifier"
+    AUTHENTICATED_API = "authenticated_api"
+    UNKNOWN = "unknown"
+
+
 class AlgorithmFamily(StrEnum):
     SYMMETRIC_CIPHER = "symmetric_cipher"
     ASYMMETRIC_ENCRYPTION = "asymmetric_encryption"
@@ -65,6 +86,12 @@ class AlgorithmStatus(StrEnum):
     DEPRECATED = "deprecated"
     DISALLOWED = "disallowed"
     LEGACY = "legacy"
+    UNKNOWN = "unknown"
+
+
+class AlgorithmIdentificationStatus(StrEnum):
+    IDENTIFIED = "identified"
+    PARTIALLY_IDENTIFIED = "partially_identified"
     UNKNOWN = "unknown"
 
 
@@ -98,6 +125,17 @@ class RiskLevel(StrEnum):
     MEDIUM = "medium"
     HIGH = "high"
     CRITICAL = "critical"
+    UNKNOWN = "unknown"
+
+
+class MoscaUrgency(StrEnum):
+    """Temporal migration urgency; values intentionally differ from risk levels by type."""
+
+    CRITICAL = "critical"
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+    NOT_APPLICABLE = "not_applicable"
     UNKNOWN = "unknown"
 
 

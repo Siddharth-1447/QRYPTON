@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import math
 from collections import Counter
+from threading import Event
 from typing import BinaryIO
 
 
 def shannon_entropy(
-    stream: BinaryIO, *, offset: int, size: int, chunk_size: int = 64 * 1024
+    stream: BinaryIO,
+    *,
+    offset: int,
+    size: int,
+    chunk_size: int = 64 * 1024,
+    cancelled: Event | None = None,
 ) -> float:
     """Return Shannon entropy in bits per byte without materializing a section."""
     if offset < 0 or size < 0 or chunk_size <= 0:
@@ -18,6 +24,8 @@ def shannon_entropy(
     remaining = size
     total = 0
     while remaining:
+        if cancelled is not None and cancelled.is_set():
+            raise InterruptedError("entropy calculation cancelled")
         chunk = stream.read(min(remaining, chunk_size))
         if not chunk:
             break

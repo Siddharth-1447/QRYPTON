@@ -58,7 +58,9 @@ def test_medium_synthetic_repository_performance(tmp_path: Path) -> None:
         subdir.mkdir()
         for f in range(20):
             (subdir / f"file_{f}.py").write_text(
-                f"from Crypto.Cipher import AES\nkey = b'0123456789abcdef'\ncipher_{f} = AES.new(key, AES.MODE_ECB)\n",
+                "from Crypto.Cipher import AES\n"
+                "key = b'0123456789abcdef'\n"
+                f"cipher_{f} = AES.new(key, AES.MODE_ECB)\n",
                 encoding="utf-8",
             )
 

@@ -19,6 +19,117 @@ from qrypton.scanners.source.rules import (
 from qrypton.scanners.source.traversal import SourceFile
 
 _SECRET_LITERAL = re.compile(r"(?i)(key|secret|password|token)\s*=|b?['\"][^'\"]{16,}['\"]")
+_MAX_RESOLVED_ALGORITHM_LENGTH = 128
+
+
+class _LiteralBindings(ast.NodeVisitor):
+    """Count writes in one scope; retain only unconditional literal assignments."""
+
+    def __init__(self, max_nodes: int) -> None:
+        self.max_nodes = max_nodes
+        self.visited = 0
+        self.writes: dict[str, list[tuple[str | None, ast.AST]]] = {}
+        self.direct = False
+
+    def visit(self, node: ast.AST) -> None:
+        self.visited += 1
+        if self.visited > self.max_nodes:
+            raise ValueError("AST node limit exceeded")
+        super().visit(node)
+
+    def _write(self, target: ast.AST, value: str | None, statement: ast.AST) -> None:
+        for child in ast.walk(target):
+            if isinstance(child, ast.Name):
+                self.writes.setdefault(child.id, []).append((value, statement))
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        value = (
+            node.value.value
+            if self.direct
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+            and 0 < len(node.value.value) <= _MAX_RESOLVED_ALGORITHM_LENGTH
+            else None
+        )
+        for target in node.targets:
+            self._write(target, value if isinstance(target, ast.Name) else None, node)
+        previous = self.direct
+        self.direct = False
+        self.visit(node.value)
+        self.direct = previous
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        value = (
+            node.value.value
+            if self.direct
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+            and 0 < len(node.value.value) <= _MAX_RESOLVED_ALGORITHM_LENGTH
+            else None
+        )
+        self._write(node.target, value if isinstance(node.target, ast.Name) else None, node)
+        if node.value is not None:
+            self.visit(node.value)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        self._write(node.target, None, node)
+        self.visit(node.value)
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        self._write(node.target, None, node)
+        self.visit(node.value)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, (ast.Store, ast.Del)):
+            self._write(node, None, node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        self._write(ast.Name(id=node.name, ctx=ast.Store()), None, node)
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self._write(ast.Name(id=node.name, ctx=ast.Store()), None, node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        return
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            name = alias.asname or alias.name.split(".")[0]
+            self._write(ast.Name(id=name, ctx=ast.Store()), None, node)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        for alias in node.names:
+            name = alias.asname or alias.name
+            self._write(ast.Name(id=name, ctx=ast.Store()), None, node)
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        if node.name is not None:
+            self._write(ast.Name(id=node.name, ctx=ast.Store()), None, node)
+        self.generic_visit(node)
+
+    def visit_Global(self, node: ast.Global | ast.Nonlocal) -> None:
+        for name in node.names:
+            self._write(ast.Name(id=name, ctx=ast.Store()), None, node)
+
+    visit_Nonlocal = visit_Global
+
+
+def _scope_bindings(
+    body: list[ast.stmt], parameters: ast.arguments | None, max_nodes: int
+) -> dict[str, list[tuple[str | None, ast.AST]]]:
+    collector = _LiteralBindings(max_nodes)
+    if parameters is not None:
+        for arg in (*parameters.posonlyargs, *parameters.args, *parameters.kwonlyargs):
+            collector.writes.setdefault(arg.arg, []).append((None, arg))
+        for optional_arg in (parameters.vararg, parameters.kwarg):
+            if optional_arg is not None:
+                collector.writes.setdefault(optional_arg.arg, []).append((None, optional_arg))
+    for statement in body:
+        collector.direct = isinstance(statement, (ast.Assign, ast.AnnAssign))
+        collector.visit(statement)
+    return collector.writes
 
 
 def _snippet(source: SourceFile, node: ast.AST, limit: int) -> str | None:
@@ -92,6 +203,109 @@ class _Visitor(ast.NodeVisitor):
         self.nodes = 0
         self.mode_algorithms: dict[ast.AST, str] = {}
         self.algorithm_modes: dict[ast.AST, str] = {}
+        self.literal_scopes: list[dict[str, list[tuple[str | None, ast.AST]]]] = []
+
+    def visit_Module(self, node: ast.Module) -> None:
+        self.literal_scopes.append(_scope_bindings(node.body, None, self.limits.max_ast_nodes))
+        self.generic_visit(node)
+        self.literal_scopes.pop()
+
+    def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        for default in (*node.args.defaults, *node.args.kw_defaults):
+            if default is not None:
+                self.visit(default)
+        self.literal_scopes.append(_scope_bindings(node.body, node.args, self.limits.max_ast_nodes))
+        for statement in node.body:
+            self.visit(statement)
+        self.literal_scopes.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_function(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_function(node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        for default in (*node.args.defaults, *node.args.kw_defaults):
+            if default is not None:
+                self.visit(default)
+        self.literal_scopes.append({})
+        self.visit(node.body)
+        self.literal_scopes.pop()
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        for base in node.bases:
+            self.visit(base)
+        for keyword in node.keywords:
+            self.visit(keyword.value)
+        self.literal_scopes.append({})
+        for statement in node.body:
+            self.visit(statement)
+        self.literal_scopes.pop()
+
+    def _hashlib_algorithm(self, node: ast.Call) -> None:
+        argument = (
+            node.args[0]
+            if node.args
+            else next((keyword.value for keyword in node.keywords if keyword.arg == "name"), None)
+        )
+        literal: str | None = None
+        method = "unresolved-dynamic"
+        if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+            literal = argument.value
+            method = "literal"
+        elif isinstance(argument, ast.Name) and self.literal_scopes:
+            writes = self.literal_scopes[-1].get(argument.id, ())
+            if len(writes) == 1:
+                candidate, assignment = writes[0]
+                end_line = getattr(assignment, "end_lineno", None)
+                end_column = getattr(assignment, "end_col_offset", None)
+                if (
+                    candidate is not None
+                    and isinstance(assignment, (ast.Assign, ast.AnnAssign))
+                    and end_line is not None
+                    and end_column is not None
+                    and (
+                        end_line < argument.lineno
+                        or end_line == argument.lineno
+                        and end_column <= argument.col_offset
+                    )
+                ):
+                    literal = candidate
+                    method = "resolved-literal"
+        rule = algorithm_for_name(literal.casefold()) if literal else None
+        if rule is not None and rule.family != "hash":
+            rule = None
+        self.output.append(
+            _observation(
+                self.source,
+                node,
+                rule_id=(
+                    f"python.algorithm.{rule.canonical_name.replace('-', '_')}"
+                    if rule is not None
+                    else "python.algorithm.hash.unknown"
+                ),
+                subject_kind="algorithm",
+                subject_value=rule.canonical_name if rule is not None else "unknown",
+                confidence=(0.95 if method == "literal" else 0.80) if rule is not None else 0.40,
+                policy=self.policy,
+                parameters={
+                    "detection_method": method if rule is not None else "unresolved-dynamic",
+                    "confidence_reason": (
+                        "single prior string literal in the same scope"
+                        if method == "resolved-literal" and rule is not None
+                        else "direct hashlib algorithm literal"
+                        if method == "literal" and rule is not None
+                        else "hashlib.new call with unresolvable algorithm argument"
+                    ),
+                    "operation": "hashing",
+                },
+            )
+        )
 
     def _bind_cipher_mode(self, node: ast.Call, full_name: str) -> None:
         if full_name != "cryptography.hazmat.primitives.ciphers.cipher":
@@ -136,7 +350,9 @@ class _Visitor(ast.NodeVisitor):
         if node in self.algorithm_modes:
             parameters["mode"] = self.algorithm_modes[node]
         if full_name in {
-            "crypto.cipher.aes.new", "crypto.cipher.des.new", "crypto.cipher.des3.new"
+            "crypto.cipher.aes.new",
+            "crypto.cipher.des.new",
+            "crypto.cipher.des3.new",
         }:
             mode_node = node.args[1] if len(node.args) > 1 else keywords.get("mode")
             mode_name = (
@@ -153,7 +369,8 @@ class _Visitor(ast.NodeVisitor):
                 if isinstance(key_node, ast.Constant) and isinstance(key_node.value, bytes):
                     byte_length = len(key_node.value)
                 elif (
-                    isinstance(key_node, ast.BinOp) and isinstance(key_node.op, ast.Mult)
+                    isinstance(key_node, ast.BinOp)
+                    and isinstance(key_node.op, ast.Mult)
                     and isinstance(key_node.left, ast.Constant)
                     and isinstance(key_node.left.value, bytes)
                     and isinstance(key_node.right, ast.Constant)
@@ -209,6 +426,8 @@ class _Visitor(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:
         full_name = (_attribute_name(node.func, self.imports) or "").casefold()
+        if full_name == "hashlib.new":
+            self._hashlib_algorithm(node)
         self._bind_cipher_mode(node, full_name)
         tail = full_name.rsplit(".", 1)[-1]
         matched_name = full_name if algorithm_for_name(full_name) else tail
@@ -232,8 +451,8 @@ class _Visitor(ast.NodeVisitor):
             parameters = self._parameters(node, full_name)
             components = algorithm_components(matched_name)
             subject = (
-                matched_name if len(components) > 1
-                or (components and components[0].key_size_bits is not None)
+                matched_name
+                if len(components) > 1 or (components and components[0].key_size_bits is not None)
                 else rule.canonical_name
             )
             self.output.append(

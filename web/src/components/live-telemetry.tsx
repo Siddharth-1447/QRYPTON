@@ -13,6 +13,9 @@ import {
   Gauge,
 } from "lucide-react";
 
+import { Badge } from "@/components/ui/primitives";
+import { TelemetryChart } from "@/components/telemetry-chart";
+
 type Classification = "vulnerable" | "compliant" | "deprecated";
 
 interface StreamRow {
@@ -24,7 +27,7 @@ interface StreamRow {
   status: Classification;
 }
 
-// Fixed catalog of algorithms the live scanner classifies as it inspects traffic.
+// Synthetic catalog for the explicitly labelled interface preview.
 const CATALOG: Array<{ alg: string; keyLabel: string; status: Classification }> = [
   { alg: "RSA-2048", keyLabel: "2048-bit", status: "vulnerable" },
   { alg: "RSA-4096", keyLabel: "4096-bit", status: "vulnerable" },
@@ -53,11 +56,7 @@ const HOSTS = [
 
 const BAR_COUNT = 28;
 
-const STATUS_META: Record<Classification, { label: string; dot: string; text: string }> = {
-  vulnerable: { label: "Vulnerable", dot: "bg-red-500", text: "text-red-500" },
-  compliant: { label: "PQC Compliant", dot: "bg-emerald-400", text: "text-emerald-400" },
-  deprecated: { label: "Deprecated", dot: "bg-amber-500", text: "text-amber-500" },
-};
+
 
 function formatTs(date: Date) {
   const hh = String(date.getHours()).padStart(2, "0");
@@ -80,7 +79,6 @@ export function LiveTelemetry() {
   );
 
   const idRef = useRef(0);
-
   const tick = useCallback(() => {
     const entry = CATALOG[Math.floor(Math.random() * CATALOG.length)];
     const host = HOSTS[Math.floor(Math.random() * HOSTS.length)];
@@ -113,43 +111,48 @@ export function LiveTelemetry() {
 
   useEffect(() => {
     if (!running) return;
-    tick();
+    const initialTick = window.setTimeout(tick, 0);
     const interval = setInterval(tick, 1400);
-    return () => clearInterval(interval);
+    return () => {
+      window.clearTimeout(initialTick);
+      clearInterval(interval);
+    };
   }, [running, tick]);
 
   return (
     <section id="live-scanner" aria-labelledby="live-scanner-heading" className="space-y-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+      <div role="status" className="qrypton-simulated-banner">
+        SIMULATED DATA — sample mode; no network traffic was inspected
+      </div>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h2
             id="live-scanner-heading"
-            className="mt-1 flex items-center gap-2 text-xl font-semibold tracking-tight"
+            className="mt-1 flex items-center gap-2 text-xl font-semibold tracking-normal"
           >
-            <Radio className="size-5 text-primary" aria-hidden="true" />
-            Live Cryptographic Scanner
+            <Radio className="size-5 text-secondary" aria-hidden="true" />
+            Network Inspection Preview
           </h2>
           <p className="mt-1 text-sm leading-6 text-muted-foreground">
-            Continuous inspection of network traffic, classifying every handshake against
-            post-quantum readiness in real time.
+            Simulated handshake activity previews the inspection interface. These values are not measured network traffic.
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-4">
           <span
             className={`inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-xs font-semibold ${
-              running ? "qrypton-risk-success" : "qrypton-risk-medium"
+              running ? "bg-muted text-secondary" : "bg-muted text-secondary"
             }`}
           >
             <span
-              className={`size-1.5 rounded-full bg-current ${running ? "animate-pulse" : ""}`}
+              className={`size-1.5 rounded-full bg-current ${running ? "" : ""}`}
               aria-hidden="true"
             />
-            {running ? "Live" : "Paused"}
+            {running ? "Demo running" : "Demo paused"}
           </span>
           <button
             type="button"
             onClick={() => setRunning((prev) => !prev)}
-            className="inline-flex min-h-9 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm font-semibold text-foreground transition-colors hover:bg-muted"
+            className="inline-flex min-h-10 items-center gap-2 rounded-md border border-border bg-card px-4 text-sm font-semibold text-foreground qrypton-motion hover:bg-muted"
           >
             {running ? (
               <>
@@ -168,133 +171,113 @@ export function LiveTelemetry() {
 
       <div className="grid gap-4 lg:grid-cols-3">
         {/* Live scanner inspection panel */}
-        <div className="qrypton-card flex flex-col gap-4 p-5 lg:col-span-2">
+        <div className="qrypton-card flex flex-col gap-4 p-6 lg:col-span-2">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Activity
-                className={`size-4 text-primary ${running ? "animate-pulse" : ""}`}
+                className={`size-4 text-secondary ${running ? "" : ""}`}
                 aria-hidden="true"
               />
               <span className="text-sm font-semibold">Network inspection</span>
             </div>
-            <span className="flex items-center gap-1.5 font-mono text-xs text-muted-foreground">
+            <span className="flex items-center gap-1.5 tabular-nums text-xs text-muted-foreground">
               <Gauge className="size-3.5" aria-hidden="true" />
               {mounted ? `${(throughput[throughput.length - 1] * 4.2).toFixed(0)} handshakes/s` : "—"}
             </span>
           </div>
           <p className="-mt-2 text-xs leading-5 text-muted-foreground">
-            This panel samples TLS handshakes to identify the negotiated algorithm, key strength,
-            and PQC readiness before the connection is relied on by a service. It provides a
-            live operational signal alongside the persisted artifact scan results.
+            Example TLS handshakes illustrate algorithm classification and key strength.
+            This preview is separate from your persisted scan findings.
           </p>
 
-          {/* Currently inspecting target */}
-          <div className="flex items-center justify-between rounded-md border border-border bg-muted/40 px-4 py-3">
+          {/* Sample endpoint target */}
+          <div className="flex items-center justify-between rounded-md border border-border bg-muted/40 px-4 py-4">
             <div>
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                Currently inspecting
+              <p className="text-xs font-semibold normal-case tracking-normal text-muted-foreground">
+                Sample endpoint
               </p>
-              <p className="mt-0.5 font-mono text-sm font-semibold text-foreground">
+              <p className="mt-0.5 tabular-nums text-sm font-semibold text-foreground">
                 {mounted ? target : "initializing…"}
               </p>
             </div>
-            <span className="font-mono text-xs text-muted-foreground">TLS 1.3 · handshake</span>
+            <span className="tabular-nums text-xs text-muted-foreground">TLS 1.3 · handshake</span>
           </div>
 
-          {/* Clean enterprise throughput telemetry graph */}
-          <div className="relative rounded-md border border-border bg-card/50 p-4">
-            <div className="flex h-20 items-end gap-1">
-{throughput.map((value, index) => (
-                  <div
-                    key={`${value}-${index}`}
-                  className="flex-1 rounded-sm bg-emerald-500/30 border-t border-emerald-400/60 transition-all duration-300"
-                  style={{ height: `${mounted ? value : 24}%` }}
-                />
-              ))}
-            </div>
-            <div className="mt-3 flex items-center justify-between font-mono text-[10px] uppercase text-muted-foreground border-t border-border/60 pt-2">
-              <span>Cryptographic Handshake Rate</span>
-              <span>Rolling telemetry window</span>
-            </div>
-          </div>
+          <TelemetryChart samples={throughput} running={running} />
         </div>
 
         {/* Telemetry tickers */}
         <div className="flex flex-col gap-4">
           <TickerCard
             icon={<KeyRound className="size-4" aria-hidden="true" />}
-            label="Live Keys Scanned"
+            label="Sample keys classified"
             value={mounted ? keysScanned.toLocaleString() : "—"}
             tone="neutral"
-            caption="Cumulative this session"
+            caption="Simulated session total"
           />
           <TickerCard
             icon={<ShieldAlert className="size-4" aria-hidden="true" />}
-            label="CRQC Threshold Violations"
+            label="Sample exposure flags"
             value={mounted ? violations.toLocaleString() : "—"}
             tone="critical"
-            caption="Quantum-vulnerable assets"
+            caption="Simulated vulnerable observations"
           />
           <TickerCard
             icon={<ShieldCheck className="size-4" aria-hidden="true" />}
-            label="Active PQC Tunnels"
+            label="Sample PQC sessions"
             value={mounted ? tunnels.toLocaleString() : "—"}
             tone="success"
-            caption="ML-KEM / ML-DSA protected"
+            caption="Simulated ML-KEM / ML-DSA activity"
           />
         </div>
       </div>
 
       {/* Data stream log */}
       <div className="qrypton-card overflow-hidden">
-        <div className="flex items-center justify-between border-b border-border p-5">
+        <div className="flex items-center justify-between border-b border-border p-6">
           <div className="flex items-center gap-2">
-            <Waypoints className="size-4 text-primary" aria-hidden="true" />
-            <h3 className="text-base font-semibold">Classification data stream</h3>
+            <Waypoints className="size-4 text-secondary" aria-hidden="true" />
+            <h3 className="text-base font-semibold">Classification Data Stream</h3>
           </div>
-          <span className="font-mono text-xs text-muted-foreground">
+          <span className="tabular-nums text-xs text-muted-foreground">
             {mounted ? `${rows.length} events buffered` : "standby"}
           </span>
         </div>
         <div className="max-h-80 overflow-y-auto">
-          <table className="w-full border-collapse text-left font-mono text-xs">
+          <table className="w-full border-collapse text-left tabular-nums text-xs">
             <thead className="sticky top-0 bg-card">
-              <tr className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                <th className="px-5 py-3 font-semibold">Timestamp</th>
-                <th className="px-5 py-3 font-semibold">Asset</th>
-                <th className="px-5 py-3 font-semibold">Algorithm</th>
-                <th className="hidden px-5 py-3 font-semibold sm:table-cell">Key</th>
-                <th className="px-5 py-3 text-right font-semibold">Status</th>
+              <tr className="text-xs normal-case tracking-normal text-muted-foreground">
+                <th className="px-6 py-4 font-semibold">Timestamp</th>
+                <th className="px-6 py-4 font-semibold">Asset</th>
+                <th className="px-6 py-4 font-semibold">Algorithm</th>
+                <th className="hidden px-6 py-4 font-semibold sm:table-cell">Key</th>
+                <th className="px-6 py-4 text-right font-semibold">Status</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={5} className="px-6 py-12 text-center text-muted-foreground">
                     {mounted ? "Awaiting first classified handshake…" : "Scanner on standby"}
                   </td>
                 </tr>
               ) : (
                 rows.map((row, index) => {
-                  const meta = STATUS_META[row.status];
                   return (
                     <tr
                       key={`${row.id}-${index}`}
-                      className={`text-foreground ${index === 0 ? "qrypton-rowin" : ""}`}
+                      className={`text-foreground ${index === 0 ? "" : ""}`}
                     >
-                      <td className="whitespace-nowrap px-5 py-2.5 text-muted-foreground">
+                      <td className="whitespace-nowrap px-6 py-2.5 text-muted-foreground">
                         {row.ts}
                       </td>
-                      <td className="whitespace-nowrap px-5 py-2.5 font-semibold">{row.host}</td>
-                      <td className="whitespace-nowrap px-5 py-2.5">{row.alg}</td>
-                      <td className="hidden whitespace-nowrap px-5 py-2.5 text-muted-foreground sm:table-cell">
+                      <td className="whitespace-nowrap px-6 py-2.5 font-mono font-semibold">{row.host}</td>
+                      <td className="whitespace-nowrap px-6 py-2.5 font-mono">{row.alg}</td>
+                      <td className="hidden whitespace-nowrap px-6 py-2.5 font-mono text-muted-foreground sm:table-cell">
                         {row.keyLabel}
                       </td>
-                      <td className="whitespace-nowrap px-5 py-2.5 text-right">
-                        <span className={`inline-flex items-center gap-1.5 font-semibold ${meta.text}`}>
-                          <span className={`size-1.5 rounded-full ${meta.dot}`} aria-hidden="true" />
-                          {meta.label}
-                        </span>
+                      <td className="whitespace-nowrap px-6 py-2.5 text-right">
+                        <Badge>{row.status === "compliant" ? <ShieldCheck className="size-3" aria-hidden="true" /> : <ShieldAlert className="size-3" aria-hidden="true" />}{row.status === "vulnerable" ? "Vulnerable" : row.status === "deprecated" ? "Deprecated" : "PQC Compliant"}</Badge>
                       </td>
                     </tr>
                   );
@@ -323,27 +306,27 @@ function TickerCard({
 }) {
   const valueTone =
     tone === "critical"
-      ? "text-red-500"
+      ? "text-secondary"
       : tone === "success"
-        ? "text-emerald-400"
+        ? "text-secondary"
         : "text-foreground";
   const iconTone =
     tone === "critical"
-      ? "qrypton-risk-critical"
+      ? "bg-muted text-secondary"
       : tone === "success"
-        ? "qrypton-risk-success"
-        : "bg-muted text-primary";
+        ? "bg-muted text-secondary"
+        : "bg-muted text-secondary";
 
   return (
-    <div className="qrypton-card flex flex-1 flex-col justify-between gap-3 p-5">
+    <div className="qrypton-card flex flex-1 flex-col justify-between gap-4 p-6">
       <div className="flex items-center justify-between">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+        <span className="text-xs font-semibold normal-case tracking-normal text-muted-foreground">
           {label}
         </span>
         <span className={`rounded-md p-2 ${iconTone}`}>{icon}</span>
       </div>
       <div>
-        <p className={`font-mono text-3xl font-bold tabular-nums ${valueTone}`}>{value}</p>
+        <p className={`tabular-nums text-3xl font-semibold tabular-nums ${valueTone}`}>{value}</p>
         <p className="mt-1 text-xs text-muted-foreground">{caption}</p>
       </div>
     </div>

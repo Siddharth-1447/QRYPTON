@@ -1,17 +1,19 @@
 "use client";
 
-import { useState } from "react";
-import { AlertCircle, ArrowRight, Check, Eye, EyeOff, LockKeyhole, ShieldCheck } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { AlertCircle, ArrowRight, Eye, EyeOff, ShieldCheck } from "lucide-react";
 import { Alert, Badge, Button, Card, CardContent, CardHeader, CardTitle, Input } from "@/components/ui/primitives";
-import { CryptoLockVisual } from "@/components/crypto-lock-visual";
+import { Wordmark } from "@/components/logo";
+import { HeroLogo } from "@/components/hero-logo";
+import { API_BASE, workspaceRequest } from "@/lib/api";
+import { ProviderIcon } from "./provider-icon";
 
 type AuthScreen = "login" | "onboarding";
+type Provider = "google" | "github" | "gitlab";
 
 interface AuthFlowProps {
   onComplete: () => void;
 }
-
-const devAuthRedirect = process.env.NEXT_PUBLIC_DEV_SUPABASE_REDIRECT_URL || "#";
 
 const steps = [
   { label: "Connect", description: "Bring in repositories and runtime assets." },
@@ -26,70 +28,141 @@ export function AuthFlow({ onComplete }: AuthFlowProps) {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [recoverySent, setRecoverySent] = useState(false);
+  const [authConfig, setAuthConfig] = useState<{ providers: Record<Provider, boolean>; token_configured: boolean } | null>(null);
+  const callbackStarted = useRef(false);
   const [rememberMe, setRememberMe] = useState(true);
+  const [mode, setMode] = useState<"signin" | "signup" | "token">("signin");
+  const [confirmPassword, setConfirmPassword] = useState("");
 
-  const persistSession = () => {
+  const persistSession = (subject = "Viewer", signedInEmail?: string) => {
+    for (const entry of [window.localStorage, window.sessionStorage]) for (const key of ["qrypton.session", "qrypton.user", "qrypton.email"]) entry.removeItem(key);
     const storage = rememberMe ? window.localStorage : window.sessionStorage;
     storage.setItem("qrypton.session", "active");
-    storage.setItem("qrypton.user", email.trim() || "security@qrypton.local");
+    storage.setItem("qrypton.user", subject);
+    if (signedInEmail) storage.setItem("qrypton.email", signedInEmail);
+    window.localStorage.setItem("qrypton.has_visited", "true");
+
   };
 
   const submitLogin = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError(null);
-    setRecoverySent(false);
+
     if (!email.trim() || !email.includes("@")) {
-      setError("Enter a valid work email address.");
+      setError("Enter a valid email address.");
       return;
     }
-    if (password.length < 8) {
-      setError("Password must be at least 8 characters.");
+    if (!password || (mode === "signup" && password.length < 12)) {
+      setError("Enter your password (at least 12 characters for a new account).");
       return;
     }
+    if (mode === "signup" && password !== confirmPassword) { setError("Passwords do not match."); return; }
     setLoading(true);
-    await new Promise((resolve) => setTimeout(resolve, 850));
-    setLoading(false);
-    persistSession();
-    setScreen("onboarding");
+    try {
+      if (mode !== "token") {
+        const actor = await workspaceRequest<{ access_token: string; subject: string; role: string; email: string }>(`/auth/${mode}`, { method: "POST", body: JSON.stringify({ email: email.trim(), password }) });
+        sessionStorage.setItem("qrypton.access-token", actor.access_token);
+        sessionStorage.setItem("qrypton.role", actor.role);
+        persistSession(actor.subject, actor.email);
+        setPassword(""); setConfirmPassword(""); setScreen("onboarding"); return;
+      }
+      const response = await fetch(`${API_BASE}/api/v1/session`, {headers: {Authorization: `Bearer ${password}`}, signal: AbortSignal.timeout(10000)});
+      if (!response.ok) throw new Error(response.status === 401 ? "This token is invalid. Use a token provisioned by your workspace administrator." : "The authentication service is unavailable. Check the backend connection.");
+      const actor = await response.json();
+      sessionStorage.setItem("qrypton.access-token", password);
+      sessionStorage.setItem("qrypton.role", actor.role);
+      persistSession(actor.subject, email.trim());
+      setScreen("onboarding");
+    } catch (cause) { setError(cause instanceof TypeError ? "Cannot connect to the authentication service. Check the backend connection." : cause instanceof Error ? cause.message : "Sign in failed"); }
+    finally { setLoading(false); }
   };
 
-  const recoverAccess = async () => {
-    if (!email.trim() || !email.includes("@")) {
-      setError("Enter your work email first so we can send recovery instructions.");
-      return;
-    }
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void workspaceRequest<typeof authConfig>("/auth/providers", { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(8000)]) }).then(config => {
+      if (!config?.providers || typeof config.token_configured !== "boolean") throw new Error("Invalid authentication configuration");
+      setAuthConfig(config);
+    }).catch(() => {
+      if (!controller.signal.aborted) { setAuthConfig({ providers: { google: false, github: false, gitlab: false }, token_configured: false }); setError("Cannot connect to the authentication service. Check the backend connection."); }
+    });
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.hash.slice(1));
+    const code = params.get("auth_code");
+    const failure = params.get("auth_error");
+    if ((!code && !failure) || callbackStarted.current) return;
+    callbackStarted.current = true;
+    window.history.replaceState({}, "", window.location.pathname);
+    if (failure) { queueMicrotask(() => setError(failure)); return; }
+    const verifier = sessionStorage.getItem("qrypton.oauth-verifier");
+    sessionStorage.removeItem("qrypton.oauth-verifier");
+    if (!verifier) { queueMicrotask(() => setError("Sign-in expired. Please start again.")); return; }
+    void workspaceRequest<{ access_token: string; subject: string; role: string; email?: string | null }>("/auth/exchange", { method: "POST", body: JSON.stringify({ code, verifier, origin: window.location.origin }) }).then(actor => {
+      for (const entry of [window.localStorage, window.sessionStorage]) for (const key of ["qrypton.session", "qrypton.user", "qrypton.email"]) entry.removeItem(key);
+      sessionStorage.setItem("qrypton.access-token", actor.access_token);
+      sessionStorage.setItem("qrypton.role", actor.role);
+      sessionStorage.setItem("qrypton.user", actor.subject);
+      if (actor.email) sessionStorage.setItem("qrypton.email", actor.email);
+      sessionStorage.setItem("qrypton.session", "active");
+      localStorage.setItem("qrypton.has_visited", "true");
+      setScreen("onboarding");
+    }).catch(cause => setError(cause instanceof Error ? cause.message : "Sign-in failed."));
+  }, []);
+
+  const startProvider = async (provider: Provider) => {
+    setLoading(true); setError(null);
+    try {
+      const verifier = Array.from(crypto.getRandomValues(new Uint8Array(32)), byte => byte.toString(16).padStart(2, "0")).join("");
+      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
+      const challenge = btoa(String.fromCharCode(...digest)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+      sessionStorage.setItem("qrypton.oauth-verifier", verifier);
+      const result = await workspaceRequest<{ url: string }>(`/auth/${provider}/start`, { method: "POST", body: JSON.stringify({ origin: window.location.origin, challenge }) });
+      window.location.assign(result.url);
+    } catch (cause) { sessionStorage.removeItem("qrypton.oauth-verifier"); setError(cause instanceof Error ? cause.message : "Provider sign-in failed."); setLoading(false); }
+  };
+
+  const loadSample = async () => {
     setLoading(true);
     setError(null);
-    await new Promise((resolve) => setTimeout(resolve, 700));
-    setLoading(false);
-    setRecoverySent(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/v1/sample-workspace`, { method: "POST" });
+      if (!response.ok) throw new Error("Sample workspace could not be loaded. Check the backend connection and retry.");
+      onComplete();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Sample workspace could not be loaded.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   if (screen === "onboarding") {
     return (
       <main className="flex min-h-screen items-center justify-center bg-background px-4 py-10 sm:px-6">
         <section className="w-full max-w-3xl">
-          <div className="mb-8 flex items-center gap-3">
-            <div className="flex size-10 items-center justify-center rounded-lg bg-primary text-primary-foreground"><ShieldCheck aria-hidden="true" /></div>
-            <div><p className="text-lg font-semibold tracking-tight">QRYPTON</p><p className="qrypton-kicker">PQC command center</p></div>
+          <div className="mb-8 flex items-center gap-4">
+            <div className="flex size-10 items-center justify-center rounded-lg bg-muted text-foreground"><ShieldCheck aria-hidden="true" /></div>
+            <div><p className="text-lg font-semibold tracking-normal"><Wordmark /></p></div>
           </div>
           <Card>
             <CardHeader className="border-b border-border bg-card p-6 sm:p-8">
-              <Badge tone="success" className="w-fit">Workspace ready</Badge>
-              <CardTitle className="pt-3 text-2xl sm:text-3xl">Start with your security posture</CardTitle>
-              <p className="max-w-2xl text-sm leading-6 text-muted-foreground">QRYPTON helps your team move from cryptographic inventory to an evidence-backed migration plan. You can connect a source, review exposure, and assign next actions from one workspace.</p>
+              <Badge className="w-fit">Workspace ready</Badge>
+              <CardTitle className="pt-4 text-2xl sm:text-3xl">Start with Your Workspace’s Security Posture</CardTitle>
+              <p className="max-w-2xl text-sm leading-6 text-muted-foreground">Connect assets, review cryptographic exposure, and plan migration from one workspace.</p>
             </CardHeader>
             <CardContent className="p-6 sm:p-8">
-              <div className="grid gap-3 md:grid-cols-3">
+              <div className="grid gap-4 md:grid-cols-3">
                 {steps.map((step, index) => (
                   <div key={`${step.label}-${index}`} className="rounded-lg border border-border bg-muted/40 p-4">
-                    <div className="mb-4 flex items-center gap-2 text-primary"><span className="flex size-7 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">{index + 1}</span><span className="text-sm font-semibold">{step.label}</span></div>
-                    <p className="text-sm leading-6 text-muted-foreground">{step.description}</p>
+                    <div className="mb-4 flex items-center gap-2 text-secondary"><span className="flex size-7 items-center justify-center rounded-full bg-muted text-xs font-semibold text-foreground">{index + 1}</span><span className="text-sm font-semibold">{step.label}</span></div>
+                    <p className="text-sm leading-6 text-muted-foreground">{step.label === "Assess" ? <><Wordmark /> maps algorithms, evidence, and risk.</> : step.description}</p>
                   </div>
                 ))}
               </div>
-              <div className="mt-8 flex flex-col gap-3 border-t border-border pt-6 sm:flex-row sm:items-center sm:justify-between"><p className="text-sm text-muted-foreground">You can change these connections and settings later.</p><Button onClick={onComplete}>Open command center <ArrowRight data-icon="inline-end" /></Button></div>
+              {error && <Alert className="mt-6 border-border" role="alert"><AlertCircle aria-hidden="true" /><p>{error}</p></Alert>}
+              <div className="mt-8 flex flex-col gap-4 border-t border-border pt-6 sm:flex-row sm:items-center sm:justify-between"><Button variant="secondary" disabled={loading} onClick={() => { void loadSample(); }}>{loading ? "Loading sample workspace…" : "Try with sample payment app"}</Button><Button disabled={loading} onClick={onComplete}>Open command center <ArrowRight data-icon="inline-end" /></Button></div>
             </CardContent>
           </Card>
         </section>
@@ -100,21 +173,28 @@ export function AuthFlow({ onComplete }: AuthFlowProps) {
   return (
     <main className="flex min-h-screen items-center justify-center bg-background px-4 py-10 sm:px-6">
       <section className="grid w-full max-w-5xl overflow-hidden rounded-xl border border-border bg-card shadow-md lg:grid-cols-[0.9fr_1.1fr]">
-        <div className="hidden flex-col justify-between bg-primary p-10 text-primary-foreground lg:flex"><div><div className="mb-10 flex items-center gap-3"><div className="flex size-10 items-center justify-center rounded-lg bg-primary-foreground/15"><LockKeyhole aria-hidden="true" /></div><span className="text-lg font-semibold tracking-[0.12em]">QRYPTON</span></div><CryptoLockVisual compact /><p className="qrypton-kicker text-primary-foreground/70">Enterprise cryptographic security</p><h1 className="mt-3 max-w-sm text-4xl font-semibold tracking-tight">Know what is exposed. Know what to do next.</h1><p className="mt-5 max-w-sm text-sm leading-6 text-primary-foreground/75">A focused workspace for inventory, quantum risk posture, and migration planning.</p></div><p className="text-xs text-primary-foreground/65">Protected workspace access</p></div>
-        <div className="p-6 sm:p-10"><div className="mb-8 flex items-center gap-3 lg:hidden"><div className="flex size-9 items-center justify-center rounded-lg bg-primary text-primary-foreground"><ShieldCheck aria-hidden="true" /></div><div><p className="font-semibold">QRYPTON</p><p className="qrypton-kicker">PQC command center</p></div></div><div className="mb-8"><p className="qrypton-kicker">Secure sign in</p><h1 className="mt-2 text-2xl font-semibold tracking-tight">Welcome back</h1><p className="mt-2 text-sm leading-6 text-muted-foreground">Sign in to review your organization&apos;s cryptographic posture.</p></div>
-          <form className="flex flex-col gap-5" onSubmit={submitLogin} noValidate><label className="flex flex-col gap-2 text-sm font-medium" htmlFor="email">Work email<Input id="email" type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@company.com" aria-invalid={Boolean(error && (!email || !email.includes("@")))} /></label><label className="flex flex-col gap-2 text-sm font-medium" htmlFor="password">Password<div className="relative"><Input id="password" type={showPassword ? "text" : "password"} autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} className="pr-11" aria-invalid={Boolean(error && password.length < 8)} /><button type="button" aria-label={showPassword ? "Hide password" : "Show password"} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" onClick={() => setShowPassword((visible) => !visible)}>{showPassword ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}</button></div></label><label className="flex items-center gap-2 text-sm text-muted-foreground"><input type="checkbox" checked={rememberMe} onChange={(event) => setRememberMe(event.target.checked)} />Remember me on this device</label>{error && <Alert className="border-red-200 bg-red-50 text-red-800"><AlertCircle className="mt-0.5 shrink-0" aria-hidden="true" /><p className="text-sm leading-5">{error}</p></Alert>}{recoverySent && <Alert className="border-green-200 bg-green-50 text-green-800"><Check className="mt-0.5 shrink-0" aria-hidden="true" /><p className="text-sm leading-5">Recovery instructions were sent if an account exists for this email.</p></Alert>}<Button type="submit" disabled={loading}>{loading ? "Verifying access…" : "Sign in"}</Button></form>
-          <div className="mt-6 flex flex-col gap-3">
-            <div className="relative flex items-center py-2"><span className="flex-grow border-t border-border"></span><span className="mx-3 text-xs text-muted-foreground">or continue with</span><span className="flex-grow border-t border-border"></span></div>
-            <button type="button" onClick={() => { setLoading(true); setTimeout(() => { persistSession(); setLoading(false); onComplete(); }, 600); }} className="inline-flex w-full items-center justify-center gap-3 rounded-md border border-border px-3 py-2.5 text-sm font-semibold text-foreground transition-colors hover:bg-muted">
-              <svg className="h-5 w-5" viewBox="0 0 24 24" aria-hidden="true"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
-              Sign in with Google
-            </button>
-            <button type="button" onClick={() => { setLoading(true); setTimeout(() => { persistSession(); setLoading(false); onComplete(); }, 600); }} className="inline-flex w-full items-center justify-center gap-3 rounded-md border border-border px-3 py-2.5 text-sm font-semibold text-foreground transition-colors hover:bg-muted">
-              <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path fillRule="evenodd" clipRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0 1 12 6.844a9.59 9.59 0 0 1 2.504.337c1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.02 10.02 0 0 0 22 12.017C22 6.484 17.522 2 12 2z"/></svg>
-              Sign in with GitHub
-            </button>
+        <div className="hidden flex-col justify-between bg-sidebar p-10 text-foreground lg:flex"><div><div className="mb-10 flex items-center gap-4"><Wordmark className="text-2xl font-semibold" /></div><HeroLogo compact spinOnMount={false} /><h1 className="mt-3 max-w-sm text-4xl font-semibold tracking-normal">Know What Is Exposed. Know What to Do Next.</h1><p className="mt-5 max-w-sm text-sm leading-6 text-secondary">A focused workspace for inventory, quantum risk posture, and migration planning.</p></div><p className="text-xs text-secondary">Protected workspace access</p></div>
+        <div className="px-6 py-6 sm:px-10 sm:py-6">
+          <div className="mb-6 lg:hidden"><Wordmark className="text-2xl font-semibold" /></div>
+          <div className="mb-6 flex gap-2" role="group" aria-label="Account access">
+            {(["signin", "signup"] as const).map(value => <Button key={value} type="button" variant={mode === value ? "primary" : "secondary"} aria-pressed={mode === value} disabled={loading} onClick={() => { setMode(value); setError(null); setPassword(""); setConfirmPassword(""); }}>{value === "signin" ? "Sign In" : "Sign Up"}</Button>)}
           </div>
-          <div className="mt-6 flex items-center justify-between gap-4 text-sm"><button type="button" className="text-muted-foreground hover:text-foreground text-xs font-semibold" onClick={onComplete}>← Return to Public Dashboard</button><button type="button" className="font-semibold text-primary hover:underline text-xs" onClick={recoverAccess} disabled={loading}>Recover account</button></div><p className="mt-8 text-center text-xs leading-5 text-muted-foreground">Access is limited to authorized QRYPTON workspaces. Your session is protected by your organization&apos;s identity controls.</p>
+          <h1 className="text-2xl font-semibold">{mode === "signup" ? "Create Your Account" : "Sign In"}</h1>
+          <p className="mt-2 mb-5 text-sm text-muted-foreground">{mode === "signup" ? "Create an account to access your cryptographic assessment workspace." : "Welcome back. Sign in to continue your assessment."}</p>
+          <form className="flex flex-col gap-4" onSubmit={submitLogin}>
+            <label className="flex flex-col gap-2 text-sm font-medium" htmlFor="email">Email Address<Input id="email" type="email" autoComplete="username" required maxLength={254} value={email} onChange={event => setEmail(event.target.value)} placeholder="you@example.com" /></label>
+            <label className="flex flex-col gap-2 text-sm font-medium" htmlFor="password">{mode === "token" ? "Workspace Access Token" : "Password"}<div className="relative"><Input id="password" type={showPassword ? "text" : "password"} autoComplete={mode === "signup" ? "new-password" : "current-password"} required minLength={mode === "signup" ? 12 : 1} maxLength={mode === "token" ? 4096 : 128} value={password} onChange={event => setPassword(event.target.value)} className="pr-11" /><button type="button" aria-label={showPassword ? "Hide password" : "Show password"} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground" onClick={() => setShowPassword(!showPassword)}>{showPassword ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}</button></div></label>
+            {mode === "signup" && <><p className="text-xs text-muted-foreground">Use at least 12 characters. New accounts have read-only access; your administrator manages additional permissions.</p><label className="flex flex-col gap-2 text-sm font-medium" htmlFor="confirm-password">Confirm Password<Input id="confirm-password" type={showPassword ? "text" : "password"} autoComplete="new-password" required maxLength={128} value={confirmPassword} onChange={event => setConfirmPassword(event.target.value)} /></label></>}
+            <label className="flex items-center gap-2 text-sm text-muted-foreground"><input type="checkbox" checked={rememberMe} onChange={event => setRememberMe(event.target.checked)} />Remember me on this device</label>
+            {error && <Alert role="alert"><AlertCircle className="shrink-0" aria-hidden="true" /><div>{error}{mode === "signin" && error.includes("Account not found") && <button type="button" className="mt-2 block text-primary underline" onClick={() => { setMode("signup"); setError(null); setPassword(""); }}>Create an account</button>}</div></Alert>}
+            <Button type="submit" disabled={loading}>{loading ? "Please wait…" : mode === "signup" ? "Create Account" : "Sign In"}</Button>
+          </form>
+          <div className="my-5 flex items-center gap-3"><span className="flex-1 border-t border-border" /><span className="text-xs text-muted-foreground">OR</span><span className="flex-1 border-t border-border" /></div>
+          <div className="flex flex-col gap-2">
+            {(["google", "github"] as const).map(provider => <button key={provider} type="button" disabled={loading} onClick={() => void startProvider(provider)} className="inline-flex min-h-10 w-full items-center justify-center gap-3 rounded-md border border-border px-4 py-2.5 text-sm font-semibold qrypton-motion hover:bg-muted disabled:opacity-50"><ProviderIcon provider={provider} />Sign in with {provider === "google" ? "Google" : "GitHub"}</button>)}
+          </div>
+          {authConfig?.token_configured && <button type="button" className="mt-4 text-sm text-primary" onClick={() => { setMode(mode === "token" ? "signin" : "token"); setPassword(""); setError(null); }}>{mode === "token" ? "Use email and password" : "Use a workspace access token"}</button>}
+          <Button type="button" variant="ghost" className="mt-4 w-full" onClick={() => { sessionStorage.removeItem("qrypton.access-token"); sessionStorage.setItem("qrypton.role", "Viewer"); persistSession(); setScreen("onboarding"); }}>Continue as read-only Viewer</Button>
         </div>
       </section>
     </main>

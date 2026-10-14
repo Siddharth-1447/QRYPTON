@@ -8,7 +8,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from qrypton.ui.errors import ERR_VIEW_LOAD_FAILED
+from qrypton.ui.errors import ERR_STORAGE_CONNECT, ERR_VIEW_LOAD_FAILED
 from qrypton.ui.mock_provider import MockDashboardDataProvider
 from qrypton.ui.provider import DashboardDataProvider
 from qrypton.ui.sqlite_provider import SqliteDashboardDataProvider
@@ -27,49 +27,51 @@ st.set_page_config(
 )
 
 
+class DashboardStorageError(RuntimeError):
+    """Storage failure with a fixed, path-free message suitable for the UI."""
+
+
 def get_provider(tenant_id: str | None = None) -> DashboardDataProvider:
-    """Composition root: bind SQLite provider if database has runs, otherwise fallback to Mock."""
+    """Bind SQLite unless sample data was explicitly requested."""
+    if os.environ.get("QRYPTON_DEMO_MODE") == "1":
+        return MockDashboardDataProvider()
     candidates: list[Path] = []
     env_db = os.environ.get("QRYPTON_DB")
     if env_db:
         candidates.append(Path(env_db))
     else:
-        candidates.extend([Path("qrypton.db"), Path("qrypton.sqlite3"), Path("qrypton_demo.db")])
+        candidates.extend([Path("qrypton.db"), Path("qrypton.sqlite3")])
 
-    for candidate in candidates:
-        if candidate.exists() and candidate.is_file():
-            try:
-                sqlite_provider = SqliteDashboardDataProvider(candidate)
-                runs = sqlite_provider.list_runs(tenant_id=tenant_id)
-                if runs:
-                    return sqlite_provider
-            except Exception:
-                continue
-
-    return MockDashboardDataProvider()
+    candidate = next((path for path in candidates if path.is_file()), None)
+    if candidate is None:
+        raise DashboardStorageError("Scan database is missing or unavailable.")
+    try:
+        provider = SqliteDashboardDataProvider(candidate)
+        provider.list_runs(tenant_id=tenant_id)
+        return provider
+    except Exception as error:
+        raise DashboardStorageError("Scan database could not be read.") from error
 
 
 def main() -> None:
     st.title("QRYPTON Enterprise Cryptographic Dashboard")
     tenant_scope = os.environ.get("QRYPTON_TENANT_ID") or None
-    provider = get_provider(tenant_id=tenant_scope)
     st.sidebar.title("Scope")
     st.sidebar.caption("Read-only presentation")
+    try:
+        provider = get_provider(tenant_id=tenant_scope)
+        available_runs = provider.list_runs(tenant_id=tenant_scope)
+    except DashboardStorageError as error:
+        st.error(f"Storage error [{ERR_STORAGE_CONNECT}]: {error}")
+        return
+    except Exception:
+        st.error(f"Storage error [{ERR_STORAGE_CONNECT}]: Scan database could not be read.")
+        return
     if isinstance(provider, MockDashboardDataProvider):
         st.sidebar.info("Demo Mode: Displaying sample cryptographic posture data.")
 
-    try:
-        available_runs = provider.list_runs(tenant_id=tenant_scope)
-    except Exception:
-        provider = MockDashboardDataProvider()
-        available_runs = provider.list_runs(tenant_id=tenant_scope)
-
-    if not available_runs and not isinstance(provider, MockDashboardDataProvider):
-        provider = MockDashboardDataProvider()
-        available_runs = provider.list_runs(tenant_id=tenant_scope)
-
     if not available_runs:
-        st.warning("No runs found in persisted storage.")
+        st.info("No scan data yet.")
         return
 
     def _format_run(index: int) -> str:

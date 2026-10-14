@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import traceback
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ from typing import Literal, Protocol, cast
 from uuid import NAMESPACE_URL, uuid5
 
 from qrypton.application.logging import SafeLogger
+from qrypton.application.progress import StageState, report
 from qrypton.application.schemas import (
     PolicyOutcome,
     RunFailure,
@@ -58,6 +60,18 @@ _NORMALIZER_ALIASES: dict[str, str] = {
 }
 
 
+class UnknownScannerError(ValueError):
+    def __init__(self, unknown: tuple[str, ...], valid: tuple[str, ...]) -> None:
+        self.unknown = unknown
+        self.valid = valid
+        super().__init__(
+            "unknown scanner(s): "
+            + ", ".join(json.dumps(name) for name in unknown)
+            + "; valid scanners: "
+            + ", ".join(valid)
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class QryptonServices:
     """Explicit dependency composition with no concrete adapters or UI imports."""
@@ -84,10 +98,15 @@ class QryptonOrchestrator:
         self._services = services
         self._max_concurrency = max_concurrency
 
-    async def run(self, request: RunRequest) -> RunResult:
-        run_id = self._run_id(request)
+    async def run(self, request: RunRequest, *, explicit_run_id: str | None = None) -> RunResult:
+        valid = tuple(sorted({scanner.name for scanner in self._services.scanners}))
+        unknown = tuple(sorted(set(request.selected_scanners) - set(valid)))
+        if unknown:
+            raise UnknownScannerError(unknown, valid)
+        run_id = explicit_run_id if explicit_run_id is not None else self._run_id(request)
         started_at = self._services.clock.now()
         self._services.store.begin_run(request, run_id=run_id)
+        report(2, "running")
         scanners = self._eligible_scanners(request)
         if not scanners:
             return self._finish_failure(
@@ -116,22 +135,27 @@ class QryptonOrchestrator:
                 key=lambda item: (item.stage, item.scanner_name or ""),
             )
         )
+        scan_state: StageState = (
+            "warning" if failures or any(item.status == "partial" for item in scanner_results)
+            else "completed"
+        )
+        report(2, scan_state)
         if scanner_results and all(item.status == "failed" for item in scanner_results):
+            report(2, "failed")
             result = RunResult(
                 run_id=run_id,
                 tenant_id=request.tenant_id,
                 status=RunStatus.FAILED,
                 started_at=started_at,
                 completed_at=self._services.clock.now(),
-                asset=request.asset,
-                target=request.target,
-                business_context=request.business_context,
                 scanner_results=scanner_results,
                 failures=failures,
                 policy_outcome=PolicyOutcome(passed=False, violations=("all_scanners_failed",)),
             )
             self._services.store.finalize_run(result)
             return result
+        report(3, scan_state)
+        report(4, "running")
         try:
             provenance = self._provenance(request, "qrypton-orchestrator", "1.0.0")
             findings = tuple(
@@ -145,6 +169,7 @@ class QryptonOrchestrator:
                 )
             )
         except Exception:
+            report(4, "warning")
             return self._finish_partial(
                 request,
                 run_id,
@@ -154,39 +179,43 @@ class QryptonOrchestrator:
                 (),
                 failures + (self._failure("correlation", "correlation_failed"),),
             )
+        report(4, "completed", len(findings))
         (
             assessments,
             recommendations,
             plans,
             mosca_evaluations,
             downstream_failures,
-        ) = self._assess_and_recommend(request, findings)
+        ) = self._assess_and_recommend(request, findings, evidence=evidence)
+        report(5, "warning" if any(f.stage == "risk" for f in downstream_failures) else "completed")
+        report(6, "warning" if downstream_failures else "completed")
         failures += downstream_failures
         status = (
             RunStatus.PARTIAL
             if failures or any(item.status == "partial" for item in scanner_results)
             else RunStatus.COMPLETED
         )
+        report(7, "running")
         cbom: bytes | None = None
         try:
             context = CbomExportContext(
                 serial_number=uuid5(NAMESPACE_URL, run_id), generated_at=request.reference_time
             )
-            export_args = {
-                "asset": request.asset,
-                "findings": findings,
-                "assessments": assessments,
-                "recommendations": recommendations,
-                "recommendation_plans": plans,
-                "evidence": evidence,
-                "context": context,
-                "business_context": request.business_context,
-                "mosca_evaluations": mosca_evaluations,
-            }
             last_error: Exception | None = None
             for attempt in range(2):
                 try:
-                    cbom = self._services.cbom_exporter.export(**export_args)
+                    cbom = self._services.cbom_exporter.export(
+                        asset=request.asset,
+                        findings=findings,
+                        assessments=assessments,
+                        recommendations=recommendations,
+                        recommendation_plans=plans,
+                        evidence=evidence,
+                        context=context,
+                        business_context=request.business_context,
+                        finding_business_contexts=request.finding_business_contexts,
+                        mosca_evaluations=mosca_evaluations,
+                    )
                     last_error = None
                     break
                 except Exception as error:
@@ -220,6 +249,7 @@ class QryptonOrchestrator:
             asset=request.asset,
             target=request.target,
             business_context=request.business_context,
+            finding_business_contexts=request.finding_business_contexts,
             scanner_results=scanner_results,
             failures=tuple(sorted(failures, key=lambda item: (item.stage, item.error_code))),
             evidence=tuple(
@@ -238,6 +268,7 @@ class QryptonOrchestrator:
         )
         self._services.store.persist_artifacts(result)
         self._services.store.finalize_run(result)
+        report(7, "completed" if cbom is not None else "warning")
         self._services.logger.event(
             "run_finished",
             fields={
@@ -277,6 +308,7 @@ class QryptonOrchestrator:
                 )
                 async for item in scanner.scan(scan_request):
                     raw.append(item)
+                report(3, "running")
                 normalizer = self._normalizer_for(scanner)
                 provenance = self._provenance(request, scanner.name, scanner.version)
                 evidence = tuple(
@@ -312,16 +344,30 @@ class QryptonOrchestrator:
                         key=lambda item: item.id,
                     )
                 )
-                partial = bool(getattr(scanner, "partial", False))
+                scanner_state = cast(object, scanner)
+                partial = bool(getattr(scanner_state, "partial", False))
+                warnings = getattr(scanner_state, "warnings", ())
+                active_warnings = (
+                    warnings if partial and isinstance(warnings, tuple)
+                    else ("scanner_limited",) if partial else ()
+                )
+                diagnostics = tuple(
+                    warning[:256]
+                    for warning in active_warnings
+                )
                 result = ScannerExecutionResult(
                     scanner_name=scanner.name,
                     scanner_version=scanner.version,
                     status="partial" if partial else "completed",
                     evidence_ids=tuple(item.id for item in evidence),
                     finding_ids=tuple(item.id for item in findings),
-                    diagnostics=("scanner_limited",) if partial else (),
+                    diagnostics=diagnostics,
                 )
-            except Exception:
+            except Exception as exc:
+                logging.error(
+                    f"Scanner {scanner.name} failed during execution: {exc}\n"
+                    f"{traceback.format_exc()}"
+                )
                 result = ScannerExecutionResult(
                     scanner_name=scanner.name,
                     scanner_version=scanner.version,
@@ -350,7 +396,10 @@ class QryptonOrchestrator:
         return cast(FindingCapableNormalizer, normalizer)
 
     def _assess_and_recommend(
-        self, request: RunRequest, findings: tuple[CryptoFinding, ...]
+        self,
+        request: RunRequest,
+        findings: tuple[CryptoFinding, ...],
+        evidence: tuple[Evidence, ...] = (),
     ) -> tuple[
         tuple[RiskAssessment, ...],
         tuple[Recommendation, ...],
@@ -363,19 +412,54 @@ class QryptonOrchestrator:
         plans: list[PqcRecommendationPlan] = []
         mosca_evaluations: list[PersistedMoscaEvaluation] = []
         failures = []
+        evidence_by_id = {item.id: item for item in evidence} if evidence else {}
+        report(5, "running")
+        recommendation_started = False
         for finding in findings:
             try:
-                assessment = self._services.risk_engine.assess(
-                    finding, request.business_context, request.risk_policy
+                business_context = request.finding_business_contexts.get(
+                    finding.id, request.business_context
                 )
+                try:
+                    assessment = self._services.risk_engine.assess(
+                        finding,
+                        business_context,
+                        request.risk_policy,
+                        evidence=evidence_by_id,
+                    )
+                except TypeError:
+                    assessment = self._services.risk_engine.assess(
+                        finding,
+                        business_context,
+                        request.risk_policy,
+                    )
                 assessments.append(assessment)
                 persistable = getattr(self._services.risk_engine, "persistable_evaluation", None)
                 if persistable is not None:
                     try:
-                        mosca_evaluations.append(persistable(finding))
+                        try:
+                            mosca_evaluations.append(
+                                persistable(
+                                    finding,
+                                    evidence=evidence_by_id,
+                                    business_context=business_context,
+                                )
+                            )
+                        except TypeError:
+                            try:
+                                mosca_evaluations.append(
+                                    persistable(finding, evidence=evidence_by_id)
+                                )
+                            except TypeError:
+                                mosca_evaluations.append(persistable(finding))
                     except Exception as mosca_error:
-                        logging.warning(f"Mosca evaluation failed for finding {finding.id}: {mosca_error}")
+                        logging.warning(
+                            f"Mosca evaluation failed for finding {finding.id}: {mosca_error}"
+                        )
                         failures.append(self._failure("risk", "mosca_evaluation_failed"))
+                if not recommendation_started:
+                    report(6, "running")
+                    recommendation_started = True
                 engine = self._services.recommendation_engine
                 if hasattr(engine, "plan"):
                     try:
@@ -383,19 +467,28 @@ class QryptonOrchestrator:
                         recommendations.extend(planned.recommendations)
                         plans.append(planned.plan)
                     except Exception as rec_error:
-                        logging.warning(f"Recommendation planning failed for finding {finding.id}: {rec_error}")
-                        failures.append(self._failure("recommendation", "recommendation_planning_failed"))
+                        logging.warning(
+                            f"Recommendation planning failed for finding {finding.id}: "
+                            f"{rec_error}"
+                        )
+                        failures.append(
+                            self._failure("recommendation", "recommendation_planning_failed")
+                        )
                 else:
                     try:
                         recommendations.extend(
                             engine.recommend(finding, assessment, request.recommendation_policy)
                         )
                     except Exception as rec_error:
-                        logging.warning(f"Recommendation failed for finding {finding.id}: {rec_error}")
+                        logging.warning(
+                            f"Recommendation failed for finding {finding.id}: {rec_error}"
+                        )
                         failures.append(self._failure("recommendation", "recommendation_failed"))
             except Exception as risk_error:
                 error_trace = traceback.format_exc()
-                logging.error(f"Risk assessment failed for finding {finding.id}: {risk_error}\n{error_trace}")
+                logging.error(
+                    f"Risk assessment failed for finding {finding.id}: {risk_error}\n{error_trace}"
+                )
                 failures.append(self._failure("risk", "finding_processing_failed"))
         return (
             tuple(sorted(assessments, key=lambda item: item.id)),

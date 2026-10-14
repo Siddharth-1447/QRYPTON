@@ -1,123 +1,122 @@
-"""End-to-End QRYPTON Enterprise Demo Runner and Release Validation Script.
-
-Executes pre-flight health checks, performs multi-surface discovery scans,
-evaluates Mosca X+Y>Z quantum risk, maps NIST PQC recommendations,
-runs CI shift-left policy gate checks, and verifies CBOM generation.
-"""
+"""Verify a local source scan, persisted evidence, and the CI policy gate."""
 
 from __future__ import annotations
 
-import json
+import argparse
 import os
+import secrets
+import sqlite3
 import sys
+import tempfile
 from pathlib import Path
 
-# Ensure src/ is in Python path
-sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from qrypton.ci.exit_codes import ExitCode
+from qrypton.ci.schema import CiResult
 from qrypton.cli import main as cli_main
+from qrypton.storage.sqlite import SqliteRunStore
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+TENANT_ID = "tenant_" + "d" * 52
 
 
 def preflight_health_check() -> bool:
-    """Pre-demo health checks verifying runtime environment and dependencies."""
-    print("=== [1/5] Executing Pre-Demo Health Checks ===")
-    
-    # 1. Python version check
-    if sys.version_info < (3, 11) or sys.version_info >= (3, 14):
-        print(f"FAILED: Python version {sys.version} out of supported range (3.11-3.13)")
+    """Use a process-local random demo secret unless the caller supplied one."""
+    if not (3, 11) <= sys.version_info[:2] < (3, 14):
+        print("FAILED: Python 3.11-3.13 is required", file=sys.stderr)
         return False
-    print(f"  ✓ Python Version: {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
-
-    # 2. Secret environment variable
-    secret = os.environ.get("QRYPTON_SECRET", "super_secret_hmac_key_32_bytes_long!!")
-    os.environ["QRYPTON_SECRET"] = secret
-    print("  ✓ ID Secret Environment Variable: Configured")
-
-    # 3. Core module imports
-    try:
-        import pydantic
-        import streamlit
-        import fastapi
-        print("  ✓ Required Dependencies: pydantic, streamlit, fastapi available")
-    except ImportError as exc:
-        print(f"FAILED: Required dependency missing: {exc}")
+    secret = os.environ.setdefault("QRYPTON_ID_SECRET", secrets.token_hex(32))
+    if len(secret.encode("utf-8")) < 32:
+        print("FAILED: QRYPTON_ID_SECRET must contain at least 32 UTF-8 bytes", file=sys.stderr)
         return False
-
-    print("✓ Health Checks PASSED\n")
     return True
 
 
-def run_enterprise_demo() -> int:
-    """Execute end-to-end demo pipeline."""
+def run_enterprise_demo(output_dir: Path | None = None) -> int:
+    """Return success only after verifying artifacts and the expected policy violation."""
     if not preflight_health_check():
         return 1
+    if output_dir is None:
+        artifacts = PROJECT_ROOT / "artifacts"
+        artifacts.mkdir(exist_ok=True)
+        output_dir = Path(tempfile.mkdtemp(prefix="demo-", dir=artifacts))
+    else:
+        output_dir = output_dir.resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        if any(output_dir.iterdir()):
+            print("FAILED: output directory must be empty", file=sys.stderr)
+            return 1
 
-    project_root = Path(__file__).parents[1]
-    corpus_dir = project_root / "demo_corpus" / "source"
-    db_path = project_root / "qrypton_demo.db"
-    cbom_path = project_root / "demo_cbom.json"
-    ci_baseline = project_root / "demo_corpus" / "ci_baseline.json"
-    ci_output = project_root / "demo_ci_report.json"
-    cbom_ci_output = project_root / "demo_cbom_ci.json"
-
-    tenant_id = "tenant_demo_enterprise_001"
-
-    print("=== [2/5] Running Multi-Surface Discovery Scan ===")
-    scan_args = [
-        "scan",
-        str(corpus_dir),
-        "--tenant-id", tenant_id,
-        "--asset-kind", "source_tree",
+    database = output_dir / "demo.sqlite3"
+    cbom = output_dir / "scan.cbom.json"
+    ci_cbom = output_dir / "ci.cbom.json"
+    ci_output = output_dir / "scan.ci.json"
+    shared = [
+        str(PROJECT_ROOT / "demo" / "enterprise"),
+        "--tenant-id", TENANT_ID,
+        "--asset-kind", "repository",
         "--asset-reference", "repo:enterprise/crypto-service",
         "--asset-name", "Enterprise Crypto Service",
-        "--id-secret-env", "QRYPTON_SECRET",
-        "--db", str(db_path),
-        "--output", str(cbom_path),
-        "--format", "json",
+        "--id-secret-env", "QRYPTON_ID_SECRET",
+        "--db", str(database),
+        "--scanner", "qrypton-source",
+        "--quiet",
     ]
-
-    scan_exit = cli_main(scan_args)
-    print(f"  ✓ Scan Exit Code: {scan_exit} (0 = Success, 2 = Policy Violation)")
-    print(f"  ✓ CBOM Generated: {cbom_path.exists()} ({cbom_path.stat().st_size if cbom_path.exists() else 0} bytes)")
-
-    print("\n=== [3/5] Running CI/CD Shift-Left Policy Gate Scan ===")
-    ci_args = [
-        "ci", "scan",
-        str(corpus_dir),
-        "--tenant-id", tenant_id,
-        "--asset-kind", "source_tree",
-        "--asset-reference", "repo:enterprise/crypto-service",
-        "--asset-name", "Enterprise Crypto Service",
-        "--id-secret-env", "QRYPTON_SECRET",
-        "--db", str(db_path),
-        "--baseline", str(ci_baseline),
-        "--ci-output", str(ci_output),
-        "--cbom-output", str(cbom_ci_output),
+    scan_code = cli_main(["scan", *shared, "--max-risk", "critical", "--output", str(cbom)])
+    if scan_code != ExitCode.SUCCESS:
+        print(f"FAILED: source scan exited with {scan_code}", file=sys.stderr)
+        return 1
+    ci_code = cli_main([
+        "ci", "scan", *shared,
+        "--baseline", str(PROJECT_ROOT / "demo_corpus" / "ci_baseline.json"),
+        "--ci-output", str(ci_output), "--cbom-output", str(ci_cbom),
         "--max-risk", "medium",
-    ]
-
-    ci_exit = cli_main(ci_args)
-    print(f"  ✓ CI Scan Exit Code: {ci_exit} (Exit Code 2 Expected for Policy Violation on Introduced High Risk)")
-    print(f"  ✓ CI Report Generated: {ci_output.exists()}")
-
-    print("\n=== [4/5] Verifying Metrics Provenance & Mosca/PQC Mapping ===")
-    if ci_output.exists():
-        ci_report = json.loads(ci_output.read_bytes())
-        introduced = ci_report.get("introduced", [])
-        print(f"  ✓ Introduced Findings Count: {len(introduced)}")
-        for idx, item in enumerate(introduced, 1):
-            print(f"    - Finding #{idx}: Rule={item.get('rule_id')} | Risk={item.get('risk_level')}")
-
-    print("\n=== [5/5] Enterprise Demo Execution Summary ===")
-    print("  ✓ Multi-Surface Discovery: Verified")
-    print("  ✓ Evidence Normalization & Correlation: Verified")
-    print("  ✓ CBOM Generation: Verified")
-    print("  ✓ Mosca X+Y>Z Prioritization: Verified")
-    print("  ✓ NIST PQC Recommendation Mapping: Verified")
-    print("  ✓ Shift-Left Policy Gate Enforcement: Verified")
-    print("\nAll End-to-End Enterprise Demo Steps Completed Successfully!")
+    ])
+    if ci_code != ExitCode.POLICY_VIOLATION:
+        print(f"FAILED: expected CI policy violation (3), got {ci_code}", file=sys.stderr)
+        return 1
+    try:
+        result = CiResult.model_validate_json(ci_output.read_bytes())
+        if (
+            result.exit_code != ci_code or not result.introduced
+            or result.scanner.failed or result.scanner.partial
+            or not cbom.read_bytes() or not ci_cbom.read_bytes()
+        ):
+            raise ValueError("scan artifacts do not prove a complete policy gate")
+        store = SqliteRunStore(database)
+        try:
+            run = store.get_run(tenant_id=TENANT_ID, run_id=result.run_id)
+            if (
+                run is None or run.status.value != "completed" or not run.findings
+                or len(run.findings) != len(run.assessments)
+                or len(run.findings) != len(run.mosca_evaluations)
+                or not run.recommendations
+                or any(not finding.evidence_ids for finding in run.findings)
+                or store.get_cbom(tenant_id=TENANT_ID, run_id=result.run_id) != ci_cbom.read_bytes()
+            ):
+                raise ValueError("persisted scan evidence or analysis is incomplete")
+            print(f"Verified {len(run.findings)} findings and {len(run.evidence)} evidence records")
+        finally:
+            store.close()
+    except (OSError, ValueError) as error:
+        print(f"FAILED: {error}", file=sys.stderr)
+        return 1
+    print("Enterprise demo: PASS; CI rejected introduced risk as expected.")
+    print(f"Artifacts: {output_dir}")
     return 0
 
 
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output-dir", type=Path, help="empty artifact output directory")
+    args = parser.parse_args()
+    try:
+        return run_enterprise_demo(args.output_dir)
+    except (OSError, sqlite3.Error) as error:
+        print(f"FAILED: {error}", file=sys.stderr)
+        return 1
+
+
 if __name__ == "__main__":
-    sys.exit(run_enterprise_demo())
+    raise SystemExit(main())

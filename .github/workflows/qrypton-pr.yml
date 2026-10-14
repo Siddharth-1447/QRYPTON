@@ -6,110 +6,206 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
+
+concurrency:
+  group: qrypton-risk-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   qrypton:
     # Forked PRs never receive organization secrets or baseline credentials.
     if: github.event.pull_request.head.repo.fork == false
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
     env:
       QRYPTON_ID_SECRET: ${{ secrets.QRYPTON_ID_SECRET }}
+      QRYPTON_TENANT_ID: ${{ vars.QRYPTON_TENANT_ID }}
+      QRYPTON_MAX_RISK: ${{ vars.QRYPTON_MAX_RISK || 'high' }}
+      PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
     steps:
+      - name: Check optional scan configuration
+        id: configuration
+        shell: bash
+        run: |
+          if [[ -n "$QRYPTON_ID_SECRET" && -n "$QRYPTON_TENANT_ID" ]]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Cryptographic risk gate skipped. Configure repository secret QRYPTON_ID_SECRET and variable QRYPTON_TENANT_ID to enable it. Standard CI checks run independently."
+          fi
       - uses: actions/checkout@v4
+        if: steps.configuration.outputs.configured == 'true'
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@v5
+        if: steps.configuration.outputs.configured == 'true'
         with:
           python-version: '3.11'
-          cache: 'pip'
-      - run: pip install .
-      # Baselines are read from the protected default branch, never the PR ref.
+          cache: pip
+      - name: Install scanner
+        if: steps.configuration.outputs.configured == 'true'
+        run: python -m pip install .
+      # Restore only the baseline directory, avoiding a second source tree in the scan.
       - name: Restore trusted baseline
+        if: steps.configuration.outputs.configured == 'true'
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.repository.default_branch }}
           path: .qrypton-trusted-baseline
-      - name: Scan and gate new cryptographic risk
-        id: qrypton-scan
-        run: |-
+          sparse-checkout: .qrypton
+          persist-credentials: false
+      - name: Prepare trusted baseline input
+        if: steps.configuration.outputs.configured == 'true'
+        shell: bash
+        run: |
+          if [[ -f .qrypton-trusted-baseline/.qrypton/baseline.ci.json ]]; then
+            cp .qrypton-trusted-baseline/.qrypton/baseline.ci.json "$RUNNER_TEMP/qrypton-pr-baseline.json"
+          else
+            printf '{"schema_version":"1.0","inventory":{}}\n' > "$RUNNER_TEMP/qrypton-pr-baseline.json"
+            echo "::warning::No trusted baseline exists yet; this run evaluates findings against an empty inventory."
+          fi
+      - name: Scan and capture policy result
+        if: steps.configuration.outputs.configured == 'true'
+        id: scan
+        shell: bash
+        run: |
+          set +e
           qrypton ci scan . \
-            --tenant-id '${{ vars.QRYPTON_TENANT_ID }}' \
+            --tenant-id "$QRYPTON_TENANT_ID" \
             --asset-kind repository \
-            --asset-reference '${{ github.repository }}' \
-            --asset-name '${{ github.event.repository.name }}' \
+            --asset-reference "$GITHUB_REPOSITORY" \
+            --asset-name "${GITHUB_REPOSITORY##*/}" \
             --id-secret-env QRYPTON_ID_SECRET \
-            --baseline .qrypton-trusted-baseline/.qrypton/baseline.ci.json \
-            --changed-from '${{ github.event.pull_request.base.sha }}' \
-            --db qrypton-ci.sqlite3 \
+            --baseline "$RUNNER_TEMP/qrypton-pr-baseline.json" \
+            --changed-from "$PR_BASE_SHA" \
+            --db "$RUNNER_TEMP/qrypton-ci.sqlite3" \
             --cbom-output qrypton.cbom.json \
             --ci-output qrypton.ci.json \
-            --max-risk '${{ vars.QRYPTON_MAX_RISK || 'high' }}' \
+            --max-risk "$QRYPTON_MAX_RISK" \
             --quiet
-          echo "exit_code=$?" >> $GITHUB_OUTPUT
+          scan_exit_code=$?
+          set -e
+          echo "exit_code=$scan_exit_code" >> "$GITHUB_OUTPUT"
+      - name: Validate and sanitize scan artifacts
+        if: always() && steps.scan.outputs.exit_code != ''
+        id: artifacts
+        env:
+          SCAN_EXIT_CODE: ${{ steps.scan.outputs.exit_code }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          from qrypton.ci.report import dump_ci_result
+          from qrypton.ci.schema import CiResult
+          from qrypton.exporters.cyclonedx_1_6 import (
+              CycloneDx16CbomExporter,
+              sanitize_persisted_cbom,
+          )
+
+          report = Path("qrypton.ci.json")
+          cbom = Path("qrypton.cbom.json")
+          try:
+              result = CiResult.model_validate_json(report.read_bytes())
+              if result.exit_code != int(os.environ["SCAN_EXIT_CODE"]):
+                  raise ValueError("Exit code mismatch")
+              report.write_bytes(dump_ci_result(result.model_dump(mode="json")))
+              sanitized = sanitize_persisted_cbom(cbom.read_bytes())
+              CycloneDx16CbomExporter().validate(sanitized)
+              cbom.write_bytes(sanitized)
+          except (OSError, ValueError):
+              raise SystemExit("Scan artifacts are missing or invalid; the gate will fail.") from None
+          healthy = (
+              result.status == "completed"
+              and result.scanner.failed == 0
+              and result.scanner.partial == 0
+          )
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write("safe=true\n")
+              output.write(f"healthy={str(healthy).lower()}\n")
+          PY
       - name: Upload sanitized QRYPTON artifacts
-        if: always()
+        if: always() && steps.artifacts.outputs.safe == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: qrypton-${{ github.sha }}
+          name: qrypton-${{ github.event.pull_request.number }}-${{ github.sha }}
           retention-days: 14
-          if-no-files-found: warn
+          if-no-files-found: error
           path: |
             qrypton.cbom.json
             qrypton.ci.json
       - name: Post PR comment with findings summary
-        if: always() && hashFiles('qrypton.ci.json') != ''
+        if: always() && steps.artifacts.outputs.safe == 'true'
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
             const ci = JSON.parse(fs.readFileSync('qrypton.ci.json', 'utf8'));
-            const delta = ci.delta || [];
-            const introduced = ci.introduced || [];
-            const newCount = delta.filter(d => d.change === 'new').length;
-            const removedCount = delta.filter(d => d.change === 'removed').length;
-            const changedCount = delta.filter(d => d.change === 'changed').length;
-
-            let icon = ci.exit_code === 0 ? '✅' : '❌';
-            let body = `## ${icon} QRYPTON Cryptographic Risk Report\n\n`;
-            body += `| Metric | Count |\n|---|---|\n`;
-            body += `| New findings | ${newCount} |\n`;
-            body += `| Removed findings | ${removedCount} |\n`;
-            body += `| Changed findings | ${changedCount} |\n`;
-            body += `| Introduced (policy-relevant) | ${introduced.length} |\n`;
-            body += `| Scanner failures | ${ci.scanner?.failed || 0} |\n`;
-            body += `| Scanner partials | ${ci.scanner?.partial || 0} |\n\n`;
-
+            const delta = ci.delta;
+            const introduced = ci.introduced;
+            const counts = Object.fromEntries(['new', 'removed', 'changed'].map(
+              change => [change, delta.filter(item => item.change === change).length]
+            ));
+            const passed = ci.exit_code === 0 && ci.status === 'completed'
+              && ci.scanner.failed === 0 && ci.scanner.partial === 0;
+            let body = `## ${passed ? '✅' : '❌'} QRYPTON Cryptographic Risk Report\n\n`;
+            body += '| Metric | Count |\n|---|---|\n';
+            body += `| New findings | ${counts.new} |\n`;
+            body += `| Removed findings | ${counts.removed} |\n`;
+            body += `| Changed findings | ${counts.changed} |\n`;
+            body += `| Introduced findings | ${introduced.length} |\n`;
+            body += `| Scanner failures | ${ci.scanner.failed} |\n`;
+            body += `| Scanner partials | ${ci.scanner.partial} |\n\n`;
             if (introduced.length > 0) {
-              body += `### Introduced findings\n\n`;
-              body += `| Fingerprint | Risk | Change |\n|---|---|---|\n`;
+              body += '### Introduced findings\n\n';
+              body += '| Fingerprint | Risk | Change |\n|---|---|---|\n';
               for (const item of introduced) {
-                const shortFp = item.fingerprint.substring(0, 16) + '...';
-                body += `| \`${shortFp}\` | ${item.risk_level} | ${item.change} |\n`;
+                const fingerprint = item.fingerprint.substring(0, 16) + '...';
+                body += `| \`${fingerprint}\` | ${item.risk_level} | ${item.change} |\n`;
               }
-              body += `\n`;
+              body += '\n';
             }
-
             body += `> Exit code: ${ci.exit_code} (${ci.exit_reason})\n`;
             body += `> Run ID: \`${ci.run_id}\`\n`;
-
-            const comments = await github.rest.issues.listComments({
-              ...context.repo,
-              issue_number: context.issue.number,
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              ...context.repo, issue_number: context.issue.number,
             });
-            const existing = comments.data.find(c =>
-              c.user.type === 'Bot' && c.body.includes('QRYPTON Cryptographic Risk Report')
+            const existing = comments.find(comment =>
+              comment.user.login === 'github-actions[bot]'
+              && comment.body.includes('QRYPTON Cryptographic Risk Report')
             );
             if (existing) {
               await github.rest.issues.updateComment({
-                ...context.repo,
-                comment_id: existing.id,
-                body,
+                ...context.repo, comment_id: existing.id, body,
               });
             } else {
               await github.rest.issues.createComment({
-                ...context.repo,
-                issue_number: context.issue.number,
-                body,
+                ...context.repo, issue_number: context.issue.number, body,
               });
             }
+      - name: Enforce captured scan result
+        if: always() && steps.configuration.outputs.configured == 'true'
+        env:
+          SCAN_EXIT_CODE: ${{ steps.scan.outputs.exit_code }}
+          ARTIFACTS_SAFE: ${{ steps.artifacts.outputs.safe }}
+          SCANNERS_HEALTHY: ${{ steps.artifacts.outputs.healthy }}
+        shell: bash
+        run: |
+          case "$SCAN_EXIT_CODE" in
+            ''|*[!0-9]*)
+              echo "::error::The scan did not produce a valid exit code."
+              exit 1
+              ;;
+          esac
+          if [[ "$SCAN_EXIT_CODE" != "0" ]]; then
+            exit "$SCAN_EXIT_CODE"
+          fi
+          if [[ "$ARTIFACTS_SAFE" != "true" || "$SCANNERS_HEALTHY" != "true" ]]; then
+            echo "::error::The scan is incomplete or its artifacts could not be validated."
+            exit 4
+          fi

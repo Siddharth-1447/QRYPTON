@@ -6,6 +6,7 @@ from uuid import UUID
 
 import pytest
 
+from qrypton.application.config import default_risk_policy
 from qrypton.contracts.enums import (
     AlgorithmFamily,
     AssetKind,
@@ -14,6 +15,7 @@ from qrypton.contracts.enums import (
     ObservationState,
 )
 from qrypton.contracts.errors import CBOMExportError, CBOMValidationError
+from qrypton.contracts.ids import HmacIdDeriver
 from qrypton.contracts.models import (
     Asset,
     BusinessContext,
@@ -23,6 +25,7 @@ from qrypton.contracts.models import (
     PersistedMoscaEvaluation,
 )
 from qrypton.exporters.cyclonedx_1_6 import CbomExportContext, CycloneDx16CbomExporter
+from qrypton.risk.mosca import MoscaParameters, MoscaRiskEngine
 from tests.risk.conftest import finding, provenance
 from tests.unit.contracts.conftest import digest
 
@@ -69,6 +72,37 @@ def test_minimal_cbom_is_schema_valid_and_deterministic() -> None:
     assert document["metadata"]["component"]["type"] == "application"
     assert document["components"][0]["cryptoProperties"]["assetType"] == "algorithm"
     assert document["dependencies"][0]["dependsOn"] == [document["components"][0]["bom-ref"]]
+
+
+def test_cbom_exposes_additive_assessment_confidence_properties() -> None:
+    item = finding("rsa", AlgorithmFamily.ASYMMETRIC_ENCRYPTION)
+    engine = MoscaRiskEngine(
+        parameters=MoscaParameters(
+            data_shelf_life_years=5, migration_time_years=2, quantum_threat_horizon_years=10
+        ),
+        id_deriver=HmacIdDeriver(b"a" * 32),
+    )
+    assessment = engine.assess(item, None, default_risk_policy(datetime(2026, 1, 1, tzinfo=UTC)))
+    document = json.loads(
+        CycloneDx16CbomExporter().export(
+            asset=_asset(),
+            findings=(item,),
+            assessments=(assessment,),
+            recommendations=(),
+            recommendation_plans=(),
+            evidence=(),
+            context=_context(),
+        )
+    )
+    properties = {
+        entry["name"]: entry["value"] for entry in document["components"][0]["properties"]
+    }
+    assert properties["org.qrypton.risk.assessment-confidence"] == "0.0"
+    assert properties["org.qrypton.risk.context-completeness"] == "0.0"
+    recorded = json.loads(properties["org.qrypton.risk.assessment"])
+    assert recorded["factors"]["evidence_confidence"] == 0.9
+    assert recorded["assessment_confidence"] == 0.0
+    assert recorded["context_completeness"] == 0.0
 
 
 def test_duplicate_identical_evidence_is_emitted_once_without_excerpt() -> None:
@@ -163,8 +197,7 @@ def test_cbom_retains_business_context_and_mosca_timelines() -> None:
         )
     )
     root_props = {
-        entry["name"]: entry["value"]
-        for entry in document["metadata"]["component"]["properties"]
+        entry["name"]: entry["value"] for entry in document["metadata"]["component"]["properties"]
     }
     assert root_props["org.qrypton.business.criticality"] == "critical"
     assert root_props["org.qrypton.business.data-classification"] == "restricted"

@@ -13,6 +13,7 @@ def test_exit_code_values_are_stable() -> None:
     assert ExitCode.SCANNER_FAILURE == 4
     assert ExitCode.BASELINE_ERROR == 5
     assert ExitCode.ARTIFACT_ERROR == 6
+    assert ExitCode.RUN_CONFLICT == 7
 
 
 def test_exit_code_one_is_reserved() -> None:

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from qrypton.application.schemas import RunResult
+from qrypton.contracts.enums import EvidenceCollectionMode, EvidenceSurface
 from qrypton.storage.sqlite import SqliteRunStore
 
 from .conftest import (
@@ -23,7 +24,6 @@ from .conftest import (
     cbom_root,
     crypto_source_tree,
     fresh_store,
-    isolated_backend,  # noqa: F401  (fixture)
     root_properties,
     scan_payload,
     settle_scan,
@@ -85,6 +85,28 @@ def _check_read_apis(ctx: dict[str, Any], scan_id: str, result: RunResult) -> by
     return cbom_response.content
 
 
+def _check_surface_records(
+    result: RunResult,
+    surface: EvidenceSurface,
+    collection_mode: EvidenceCollectionMode,
+) -> None:
+    """Every routed scan persists compatible canonical evidence records."""
+    assert result.evidence
+    assert {item.surface for item in result.evidence} == {surface}
+    assert {item.collection_mode for item in result.evidence} == {collection_mode}
+    assert all(item.provenance.scanner_name for item in result.evidence)
+    assert all(item.location is not None for item in result.evidence)
+
+
+def _root_tags(root: dict[str, Any]) -> list[str]:
+    """CBOM properties are multi-valued: collect every asset tag."""
+    return [
+        entry["value"]
+        for entry in root.get("properties", [])
+        if entry["name"] == "org.qrypton.asset.tag"
+    ]
+
+
 def _check_cbom_root(
     cbom: bytes,
     *,
@@ -95,7 +117,7 @@ def _check_cbom_root(
     root = cbom_root(cbom)
     assert root["type"] == expect_kind
     props = root_properties(root)
-    tags = [props[k] for k in props if k == "org.qrypton.asset.tag"]
+    tags = _root_tags(root)
     assert expect_target_tag in tags, f"{expect_target_tag} missing from {tags}"
     if expect_business:
         assert props.get("org.qrypton.business.criticality") == "critical"
@@ -115,9 +137,12 @@ def test_source_code_workflow(isolated_backend: dict[str, Any], tmp_path: Path) 
     scanners = {entry.scanner_name for entry in result.scanner_results}
     assert scanners == {"qrypton-source"}, f"unexpected scanner set {scanners}"
     assert len(result.findings) >= 1, "crypto fixture produced no findings"
-    assert result.cbom, "CBOM missing from persisted RunResult"
+    assert result.cbom, f"CBOM missing from {result.status.value} RunResult: {result.failures}"
+    _check_surface_records(result, EvidenceSurface.SOURCE, EvidenceCollectionMode.STATIC_ARTIFACT)
 
-    _history_lists_run(isolated_backend["db"], isolated_backend["tenant"], scan_id, result.status.value)
+    _history_lists_run(
+        isolated_backend["db"], isolated_backend["tenant"], scan_id, result.status.value
+    )
     cbom = _check_read_apis(isolated_backend, scan_id, result)
     history = isolated_backend["client"].get("/api/v1/scans")
     assert history.status_code == 200
@@ -136,12 +161,85 @@ def test_source_code_workflow(isolated_backend: dict[str, Any], tmp_path: Path) 
     assert "source:local_file" in tags
 
 
+def test_persisted_source_trace_preserves_canonical_risk_across_surfaces(
+    isolated_backend: dict[str, Any], tmp_path: Path
+) -> None:
+    """One real scan must retain each finding's identity, evidence and risk in every view."""
+    root = crypto_source_tree(tmp_path / "integrity-project")
+    scan_id = submit_scan(
+        scan_payload(target_type="source_repo", repository=str(root), branch="main")
+    )
+    assert settle_scan(scan_id) in TERMINAL_OK
+    result = _persisted(isolated_backend["db"], isolated_backend["tenant"], scan_id)
+    assert result.findings and result.business_context is not None
+
+    evidence_by_id = {item.id: item for item in result.evidence}
+    assessments = {item.finding_id: item for item in result.assessments}
+    mosca = {item.finding_id: item for item in result.mosca_evaluations}
+    assert set(assessments) == {item.id for item in result.findings}
+    assert set(mosca) == {item.id for item in result.findings}
+
+    client = isolated_backend["client"]
+    inventory = {
+        row["finding_id"]: row for row in client.get(f"/api/v1/inventory?run_id={scan_id}").json()
+    }
+    cbom = json.loads(client.get(f"/api/v1/scans/{scan_id}/cbom").content)
+    components = {
+        next(
+            prop["value"]
+            for prop in component.get("properties", ())
+            if prop["name"] == "org.qrypton.finding.id"
+        ): component
+        for component in cbom["components"]
+    }
+    finding_ids = {item.id for item in result.findings}
+    assert set(inventory) == finding_ids == set(components)
+
+    for finding in result.findings:
+        assessment = assessments[finding.id]
+        timeline = mosca[finding.id]
+        row = inventory[finding.id]
+        properties = {prop["name"]: prop["value"] for prop in components[finding.id]["properties"]}
+        assert set(finding.evidence_ids) <= set(evidence_by_id)
+        assert assessment.evidence_ids == finding.evidence_ids
+        assert assessment.factors.evidence_confidence == finding.confidence
+        assert assessment.final_priority is assessment.level
+        assert assessment.business_context_id == result.business_context.id
+        assert timeline.urgency == assessment.mosca_urgency.value
+        canonical = properties["org.qrypton.finding.canonical"]
+        if isinstance(canonical, str):
+            canonical = json.loads(canonical)
+        risk_record = properties["org.qrypton.risk.assessment"]
+        if isinstance(risk_record, str):
+            risk_record = json.loads(risk_record)
+        mosca_record = properties["org.qrypton.mosca"]
+        if isinstance(mosca_record, str):
+            mosca_record = json.loads(mosca_record)
+        assert canonical == finding.model_dump(mode="json")
+        assert risk_record["finding_id"] == finding.id
+        assert risk_record["factors"]["crypto_risk"] == (assessment.factors.crypto_risk.value)
+        assert risk_record["factors"]["quantum_risk"] == (assessment.factors.quantum_risk.value)
+        assert mosca_record["urgency"] == timeline.urgency
+        assert row["risk_level"] == assessment.final_priority.value
+        assert row["confidence"] == finding.confidence
+
+        detail = client.get(f"/api/v1/findings/{finding.id}?run_id={scan_id}")
+        assert detail.status_code == 200
+        detail_document = detail.json()
+        assert detail_document["finding"] == finding.model_dump(mode="json")
+        assert detail_document["assessment"]["id"] == assessment.id
+        assert detail_document["assessment"]["final_priority"] == assessment.final_priority.value
+        assert detail_document["mosca"]["urgency"] == timeline.urgency
+
+
 def test_source_archive_upload_workflow(isolated_backend: dict[str, Any], tmp_path: Path) -> None:
     root = crypto_source_tree(tmp_path / "proj")
     data = zip_bytes({"crypto_service.py": (root / "crypto_service.py").read_bytes()})
     artifact = upload_artifact("proj.zip", data)
     scan_id = submit_scan(
-        scan_payload(target_type="source_archive", repository="", artifact_id=artifact["artifact_id"])
+        scan_payload(
+            target_type="source_archive", repository="", artifact_id=artifact["artifact_id"]
+        )
     )
     assert settle_scan(scan_id) in TERMINAL_OK
 
@@ -149,7 +247,9 @@ def test_source_archive_upload_workflow(isolated_backend: dict[str, Any], tmp_pa
     scanners = {entry.scanner_name for entry in result.scanner_results}
     assert scanners == {"qrypton-source"}
     assert len(result.findings) >= 1
-    _history_lists_run(isolated_backend["db"], isolated_backend["tenant"], scan_id, result.status.value)
+    _history_lists_run(
+        isolated_backend["db"], isolated_backend["tenant"], scan_id, result.status.value
+    )
     cbom = _check_read_apis(isolated_backend, scan_id, result)
     _check_cbom_root(cbom, expect_kind="application", expect_target_tag="target:source_archive")
 
@@ -167,7 +267,10 @@ def test_binary_workflow_without_repository_url(isolated_backend: dict[str, Any]
     assert scanners == {"qrypton-binary"}, f"binary run misrouted: {scanners}"
     assert "qrypton-source" not in scanners
     assert len(result.findings) >= 1, "binary imports produced no findings"
-    _history_lists_run(isolated_backend["db"], isolated_backend["tenant"], scan_id, result.status.value)
+    _check_surface_records(result, EvidenceSurface.BINARY, EvidenceCollectionMode.STATIC_ARTIFACT)
+    _history_lists_run(
+        isolated_backend["db"], isolated_backend["tenant"], scan_id, result.status.value
+    )
     cbom = _check_read_apis(isolated_backend, scan_id, result)
     props = _check_cbom_root(cbom, expect_kind="file", expect_target_tag="target:binary")
     assert props.get("org.qrypton.asset.external-reference", "").startswith("crypto.bin")
@@ -187,12 +290,19 @@ def test_library_workflow_without_repository_url(isolated_backend: dict[str, Any
     assert scanners == {"qrypton-library"}, f"library run misrouted: {scanners}"
     assert "qrypton-source" not in scanners
     assert len(result.findings) >= 1
-    _history_lists_run(isolated_backend["db"], isolated_backend["tenant"], scan_id, result.status.value)
+    _check_surface_records(result, EvidenceSurface.LIBRARY, EvidenceCollectionMode.STATIC_ARTIFACT)
+    _history_lists_run(
+        isolated_backend["db"], isolated_backend["tenant"], scan_id, result.status.value
+    )
     cbom = _check_read_apis(isolated_backend, scan_id, result)
-    _check_cbom_root(cbom, expect_kind="application", expect_target_tag="target:dependency_manifest")
+    _check_cbom_root(
+        cbom, expect_kind="application", expect_target_tag="target:dependency_manifest"
+    )
 
 
-def test_container_archive_workflow_without_repository_url(isolated_backend: dict[str, Any]) -> None:
+def test_container_archive_workflow_without_repository_url(
+    isolated_backend: dict[str, Any],
+) -> None:
     """TEST 4a: real docker-save-style tar reaches the container scanner."""
     name, data = build_docker_tar()
     artifact = upload_artifact(name, data)
@@ -205,7 +315,12 @@ def test_container_archive_workflow_without_repository_url(isolated_backend: dic
     scanners = {entry.scanner_name for entry in result.scanner_results}
     assert scanners == {"qrypton-container"}, f"container run misrouted: {scanners}"
     assert "qrypton-source" not in scanners
-    _history_lists_run(isolated_backend["db"], isolated_backend["tenant"], scan_id, result.status.value)
+    _check_surface_records(
+        result, EvidenceSurface.CONTAINER, EvidenceCollectionMode.STATIC_ARTIFACT
+    )
+    _history_lists_run(
+        isolated_backend["db"], isolated_backend["tenant"], scan_id, result.status.value
+    )
     cbom = _check_read_apis(isolated_backend, scan_id, result)
     _check_cbom_root(cbom, expect_kind="container", expect_target_tag="target:container_image")
 
@@ -219,9 +334,17 @@ def test_container_reference_workflow(isolated_backend: dict[str, Any]) -> None:
     scanners = {entry.scanner_name for entry in result.scanner_results}
     assert scanners == {"qrypton-container"}
     assert "qrypton-source" not in scanners
-    _history_lists_run(isolated_backend["db"], isolated_backend["tenant"], scan_id, result.status.value)
+    _check_surface_records(
+        result, EvidenceSurface.CONTAINER, EvidenceCollectionMode.STATIC_IDENTIFIER
+    )
+    assert all("registry was not pulled" in item.limitations[0] for item in result.evidence)
+    _history_lists_run(
+        isolated_backend["db"], isolated_backend["tenant"], scan_id, result.status.value
+    )
     cbom = _check_read_apis(isolated_backend, scan_id, result)
-    props = _check_cbom_root(cbom, expect_kind="container", expect_target_tag="target:container_image")
+    props = _check_cbom_root(
+        cbom, expect_kind="container", expect_target_tag="target:container_image"
+    )
     assert props.get("org.qrypton.asset.external-reference") == "nginx:latest"
 
 
@@ -238,7 +361,14 @@ def test_kms_valid_identifier_workflow(isolated_backend: dict[str, Any]) -> None
     scanners = {entry.scanner_name for entry in result.scanner_results}
     assert scanners == {"qrypton-kms"}, f"kms run misrouted: {scanners}"
     assert "qrypton-source" not in scanners
-    _history_lists_run(isolated_backend["db"], isolated_backend["tenant"], scan_id, result.status.value)
+    _check_surface_records(result, EvidenceSurface.KMS, EvidenceCollectionMode.STATIC_IDENTIFIER)
+    assert all(
+        "no authenticated cloud-provider API call" in item.limitations[0]
+        for item in result.evidence
+    )
+    _history_lists_run(
+        isolated_backend["db"], isolated_backend["tenant"], scan_id, result.status.value
+    )
     cbom = _check_read_apis(isolated_backend, scan_id, result)
     _check_cbom_root(cbom, expect_kind="application", expect_target_tag="target:cloud_kms")
 
@@ -255,7 +385,10 @@ def test_kms_invalid_missing_and_unknown_fail_explicitly(isolated_backend: dict[
     for label, payload in (
         ("invalid", scan_payload(target_type="cloud_kms", repository="not-a-key")),
         ("missing", scan_payload(target_type="cloud_kms", repository="")),
-        ("unknown-artifact", scan_payload(target_type="cloud_kms", repository="", artifact_id="0" * 32)),
+        (
+            "unknown-artifact",
+            scan_payload(target_type="cloud_kms", repository="", artifact_id="0" * 32),
+        ),
     ):
         response = client.post("/api/v1/scans", json=payload)
         assert response.status_code == 422, f"{label}: expected 422, got {response.status_code}"
@@ -300,6 +433,9 @@ def test_failed_scan_persists_and_appears_in_history(
     result = _persisted(isolated_backend["db"], isolated_backend["tenant"], scan_id)
     assert result.status.value == "failed"
     assert result.findings == (), "failed scans must not fabricate findings"
+    scanners = {entry.scanner_name for entry in result.scanner_results}
+    assert scanners == {"qrypton-binary"}, f"failed run lost scanner attribution: {scanners}"
+    assert result.failures, "failed run must record an explicit failure"
     _history_lists_run(isolated_backend["db"], isolated_backend["tenant"], scan_id, "failed")
     status = isolated_backend["client"].get(f"/api/v1/scans/{scan_id}").json()
     assert status["status"] == "FAILED"
@@ -308,9 +444,7 @@ def test_failed_scan_persists_and_appears_in_history(
 def test_business_context_identical_across_target_types(isolated_backend: dict[str, Any]) -> None:
     """TEST 6: same context block yields the same CBOM business properties."""
     artifact = upload_artifact("crypto.bin", build_minimal_elf())
-    binary_id = submit_scan(
-        scan_payload(target_type="binary", artifact_id=artifact["artifact_id"])
-    )
+    binary_id = submit_scan(scan_payload(target_type="binary", artifact_id=artifact["artifact_id"]))
     kms_id = submit_scan(
         scan_payload(
             target_type="cloud_kms",

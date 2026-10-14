@@ -1,6 +1,6 @@
 """Immutable, validated domain contracts."""
 
-from qrypton.contracts.enums import RunStatus
+from qrypton.contracts.enums import EvidenceCollectionMode, EvidenceSurface, RunStatus
 from qrypton.contracts.ids import HmacIdDeriver, canonical_json_bytes
 from qrypton.contracts.models import (
     Algorithm,
@@ -30,6 +30,8 @@ __all__ = [
     "CertificateMetadata",
     "CryptoFinding",
     "Evidence",
+    "EvidenceCollectionMode",
+    "EvidenceSurface",
     "HmacIdDeriver",
     "KeyMaterialMetadata",
     "LibraryMetadata",

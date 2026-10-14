@@ -16,6 +16,7 @@ must route to its own scanner:
 
 from __future__ import annotations
 
+from contextlib import suppress
 from pathlib import Path
 
 from qrypton.api.app import SCANNER_ROUTING
@@ -81,7 +82,5 @@ def test_services_register_every_routed_scanner(tmp_path: Path) -> None:
                 if scanner.name == scanner_name
             ), f"no {scanner_name!r} scanner accepts {kind.value!r}"
     finally:
-        try:
+        with suppress(OSError):
             services.store.close()
-        except OSError:
-            pass

@@ -14,6 +14,7 @@ from pydantic import Field
 
 from qrypton.contracts.enums import AlgorithmFamily, AssetKind, KeyKind, ObservationState
 from qrypton.contracts.errors import CBOMExportError, CBOMValidationError
+from qrypton.contracts.identity import finding_identity_label
 from qrypton.contracts.models import (
     Algorithm,
     Asset,
@@ -88,6 +89,7 @@ class CycloneDx16CbomExporter:
         evidence: Sequence[Evidence],
         context: CbomExportContext,
         business_context: BusinessContext | None = None,
+        finding_business_contexts: Mapping[str, BusinessContext] | None = None,
         mosca_evaluations: Sequence[PersistedMoscaEvaluation] = (),
     ) -> bytes:
         root_type = _ROOT_TYPES.get(asset.kind)
@@ -110,7 +112,9 @@ class CycloneDx16CbomExporter:
                 recommendation_by_finding.get(finding.id, ()),
                 plan_by_finding.get(finding.id),
                 evidence_by_id,
+                asset.id,
                 mosca_by_finding.get(finding.id),
+                (finding_business_contexts or {}).get(finding.id),
             )
             components.append(component)
             dependencies.append({"ref": root_ref, "dependsOn": [component["bom-ref"]]})
@@ -190,14 +194,8 @@ class CycloneDx16CbomExporter:
             ("org.qrypton.business.owner", business_context.owner_reference),
         )
         for name, observation in observed:
-            if (
-                observation.state is ObservationState.OBSERVED
-                and observation.value is not None
-            ):
+            if observation.state is ObservationState.OBSERVED and observation.value is not None:
                 value = observation.value
-                # StrEnum members serialize as strings; other enums expose .value.
-                if not isinstance(value, (str, bool, int, float)) and hasattr(value, "value"):
-                    value = value.value
                 properties.append(CycloneDx16CbomExporter._property(name, value))
         if business_context.regulatory_scopes:
             properties.append(
@@ -210,18 +208,9 @@ class CycloneDx16CbomExporter:
 
     @staticmethod
     def _mosca_property(evaluation: PersistedMoscaEvaluation) -> JsonObject:
-        """Mosca timeline urgency retained per finding (data lifetime X, effort Y, horizon Z)."""
+        """Persist the complete independent Mosca result without merging severity."""
         return CycloneDx16CbomExporter._property(
-            "org.qrypton.mosca",
-            {
-                "x_data_lifetime_years": evaluation.x_data_lifetime_years,
-                "y_migration_years": evaluation.y_migration_years,
-                "z_crqc_horizon_years": evaluation.z_crqc_horizon_years,
-                "required_security_years": evaluation.required_security_years,
-                "time_margin_years": evaluation.time_margin_years,
-                "exposure_score": evaluation.exposure_score,
-                "urgency": evaluation.urgency,
-            },
+            "org.qrypton.mosca", evaluation.model_dump(mode="json")
         )
 
     def _finding_component(
@@ -231,7 +220,9 @@ class CycloneDx16CbomExporter:
         recommendations: Sequence[Recommendation],
         plan: PqcRecommendationPlan | None,
         evidence: Mapping[str, Evidence],
+        asset_id: str,
         mosca: PersistedMoscaEvaluation | None = None,
+        business_context: BusinessContext | None = None,
     ) -> JsonObject:
         bom_ref = f"qrypton:crypto:{finding.id}"
         component: JsonObject = {
@@ -239,12 +230,74 @@ class CycloneDx16CbomExporter:
             "bom-ref": bom_ref,
             "name": f"qrypton-finding-{finding.id}",
         }
+        canonical = finding.model_dump(mode="json")
+        # Scanner parameters are free-form and can carry provider secrets.
+        # Retain only a recognized, non-secret cipher mode.
+        algorithm_observation = canonical.get("algorithm", {})
+        safe_parameters: dict[str, str] = {}
+        if isinstance(algorithm_observation, dict) and isinstance(
+            algorithm_observation.get("value"), dict
+        ):
+            raw_parameters = algorithm_observation["value"].get("parameters", {})
+            mode = raw_parameters.get("mode") if isinstance(raw_parameters, dict) else None
+            if isinstance(mode, str) and mode.casefold() in {
+                "cbc",
+                "ecb",
+                "ccm",
+                "gcm",
+                "cfb",
+                "ofb",
+                "ctr",
+            }:
+                safe_parameters["mode"] = mode
+            algorithm_observation["value"]["parameters"] = safe_parameters
         properties = [
+            self._property("org.qrypton.asset.id", asset_id),
             self._property("org.qrypton.finding.id", finding.id),
             self._property("org.qrypton.finding.category", finding.category),
+            # Retain the entire canonical contract so unsupported CycloneDX facets
+            # and observation states survive round trips without inference.
+            self._property("org.qrypton.finding.canonical", canonical),
             self._property("org.qrypton.finding.confidence", finding.confidence),
             self._property("org.qrypton.provenance", self._provenance(finding.provenance)),
+            self._property(
+                "org.qrypton.identity.status", finding.algorithm_identification_status.value
+            ),
+            self._property("org.qrypton.identity.label", finding_identity_label(finding)),
+            self._property(
+                "org.qrypton.identity.confidence", finding.algorithm_identification_confidence
+            ),
+            self._property(
+                "org.qrypton.identity.evidence", sorted(finding.algorithm_identification_evidence)
+            ),
+            self._property("org.qrypton.finding.confidence.reasons", finding.confidence_reasons),
+            self._property("org.qrypton.finding.usage-confidence", finding.usage_confidence),
         ]
+        if finding.correlation_provenance is not None:
+            properties.append(
+                self._property(
+                    "org.qrypton.correlation.provenance",
+                    self._provenance(finding.correlation_provenance),
+                )
+            )
+        if finding.algorithm_variant:
+            properties.append(
+                self._property("org.qrypton.algorithm.variant", finding.algorithm_variant)
+            )
+        if finding.crypto_role:
+            properties.append(self._property("org.qrypton.crypto.role", finding.crypto_role))
+        if finding.library.state is ObservationState.OBSERVED and finding.library.value is not None:
+            metadata = finding.library.value
+            if finding.algorithm.state is not ObservationState.OBSERVED:
+                component["type"] = "library"
+            if metadata.name.state is ObservationState.OBSERVED and metadata.name.value:
+                properties.append(self._property("org.qrypton.library.name", metadata.name.value))
+            if metadata.ecosystem.state is ObservationState.OBSERVED and metadata.ecosystem.value:
+                properties.append(
+                    self._property("org.qrypton.library.ecosystem", metadata.ecosystem.value)
+                )
+        if business_context is not None:
+            properties.extend(self._business_properties(business_context))
         if (
             finding.algorithm.state is ObservationState.OBSERVED
             and finding.algorithm.value is not None
@@ -255,10 +308,24 @@ class CycloneDx16CbomExporter:
             properties.append(
                 self._property("org.qrypton.algorithm.family", algorithm.family.value)
             )
+            if safe_parameters:
+                properties.append(
+                    self._property("org.qrypton.algorithm.parameters", safe_parameters)
+                )
+            properties.append(
+                self._property("org.qrypton.algorithm.lifecycle", algorithm.lifecycle_status.value)
+            )
             if algorithm.registry_reference is not None:
                 component["externalReferences"] = [
                     {"type": "other", "url": str(algorithm.registry_reference)}
                 ]
+        elif (
+            finding.library.state is ObservationState.OBSERVED
+            and finding.library.value is not None
+            and finding.library.value.name.state is ObservationState.OBSERVED
+            and finding.library.value.name.value
+        ):
+            component["name"] = finding.library.value.name.value
         elif (
             finding.protocol.state is ObservationState.OBSERVED
             and finding.protocol.value is not None
@@ -301,6 +368,20 @@ class CycloneDx16CbomExporter:
             properties.append(
                 self._property("org.qrypton.risk.assessment", assessment.model_dump(mode="json"))
             )
+            if assessment.assessment_confidence is not None:
+                properties.append(
+                    self._property(
+                        "org.qrypton.risk.assessment-confidence",
+                        assessment.assessment_confidence,
+                    )
+                )
+            if assessment.context_completeness is not None:
+                properties.append(
+                    self._property(
+                        "org.qrypton.risk.context-completeness",
+                        assessment.context_completeness,
+                    )
+                )
         for recommendation in sorted(recommendations, key=lambda item: item.id):
             properties.append(
                 self._property("org.qrypton.recommendation", recommendation.model_dump(mode="json"))
@@ -343,8 +424,16 @@ class CycloneDx16CbomExporter:
         ):
             details["classicalSecurityLevel"] = algorithm.security_strength_bits.value
         mode = algorithm.parameters.get("mode")
-        if isinstance(mode, str) and mode in {"cbc", "ecb", "ccm", "gcm", "cfb", "ofb", "ctr"}:
-            details["mode"] = mode
+        if isinstance(mode, str) and mode.casefold() in {
+            "cbc",
+            "ecb",
+            "ccm",
+            "gcm",
+            "cfb",
+            "ofb",
+            "ctr",
+        }:
+            details["mode"] = mode.casefold()
         return properties
 
     @staticmethod
@@ -430,17 +519,102 @@ class CycloneDx16CbomExporter:
 
     @staticmethod
     def _evidence(evidence: Evidence) -> JsonObject:
-        return {
-            "id": evidence.id,
-            "kind": evidence.kind.value,
-            "raw_content_digest": evidence.raw_content_digest,
-            "location": evidence.location.model_dump(mode="json", exclude_none=True),
-            "confidence": evidence.confidence,
-            "provenance": evidence.provenance.model_dump(mode="json"),
-        }
+        # Preserve provenance, location and digests. Captured excerpts and
+        # free-form scanner attributes may contain credentials or key material.
+        return evidence.model_dump(mode="json", exclude={"excerpt", "attributes"})
 
     @staticmethod
     def _serialize(document: Any) -> bytes:
         return json.dumps(
             document, ensure_ascii=False, allow_nan=False, separators=(",", ":"), sort_keys=True
         ).encode("utf-8")
+
+
+def sanitize_persisted_cbom(payload: bytes) -> bytes:
+    """Redact unsafe legacy free-form fields without changing stored scan bytes.
+
+    Current exporter already omits these fields. Older persisted documents are
+    projected at download time; assessments and observation states are untouched.
+    """
+    document = json.loads(payload)
+    if not isinstance(document, dict):
+        raise ValueError("CBOM root must be an object")
+    changed = False
+    components = document.get("components", [])
+    if not isinstance(components, list):
+        raise ValueError("CBOM components must be a list")
+    for component in components:
+        if not isinstance(component, dict):
+            continue
+        properties = component.get("properties", [])
+        if not isinstance(properties, list):
+            continue
+        safe_properties = []
+        for prop in properties:
+            if not isinstance(prop, dict):
+                continue
+            name = prop.get("name")
+            if name == "org.qrypton.evidence":
+                try:
+                    evidence = json.loads(prop["value"])
+                except (KeyError, TypeError, ValueError):
+                    changed = True
+                    continue
+                if not isinstance(evidence, dict):
+                    changed = True
+                    continue
+                if "excerpt" in evidence or "attributes" in evidence:
+                    evidence.pop("excerpt", None)
+                    evidence.pop("attributes", None)
+                    prop["value"] = json.dumps(evidence, sort_keys=True, separators=(",", ":"))
+                    changed = True
+            elif name == "org.qrypton.algorithm.parameters":
+                try:
+                    parameters = json.loads(prop["value"])
+                except (KeyError, TypeError, ValueError):
+                    parameters = {}
+                mode = parameters.get("mode") if isinstance(parameters, dict) else None
+                if not isinstance(mode, str) or mode.casefold() not in {
+                    "cbc",
+                    "ecb",
+                    "ccm",
+                    "gcm",
+                    "cfb",
+                    "ofb",
+                    "ctr",
+                }:
+                    changed = True
+                    continue
+                safe = {"mode": mode}
+                if parameters != safe:
+                    prop["value"] = json.dumps(safe, sort_keys=True, separators=(",", ":"))
+                    changed = True
+            elif name == "org.qrypton.finding.canonical":
+                try:
+                    canonical = json.loads(prop["value"])
+                except (KeyError, TypeError, ValueError):
+                    changed = True
+                    continue
+                if not isinstance(canonical, dict):
+                    changed = True
+                    continue
+                algorithm = canonical.get("algorithm", {})
+                value = algorithm.get("value") if isinstance(algorithm, dict) else None
+                if isinstance(value, dict):
+                    parameters = value.get("parameters", {})
+                    mode = parameters.get("mode") if isinstance(parameters, dict) else None
+                    safe = (
+                        {"mode": mode}
+                        if isinstance(mode, str)
+                        and mode.casefold() in {"cbc", "ecb", "ccm", "gcm", "cfb", "ofb", "ctr"}
+                        else {}
+                    )
+                    if parameters != safe:
+                        value["parameters"] = safe
+                        prop["value"] = json.dumps(
+                            canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                        )
+                        changed = True
+            safe_properties.append(prop)
+        component["properties"] = safe_properties
+    return CycloneDx16CbomExporter._serialize(document) if changed else payload

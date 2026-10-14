@@ -44,7 +44,7 @@ def test_negative_duration_is_rejected() -> None:
         MoscaInput(x_data_lifetime_years=1, y_migration_years=-0.1, z_crqc_horizon_years=10)
 
 
-def test_low_business_impact_caps_critical_urgency_at_high() -> None:
+def test_mosca_urgency_does_not_become_final_priority_without_finding_evidence() -> None:
     result = evaluate_qrypton_risk(
         MoscaInput(x_data_lifetime_years=20, y_migration_years=1, z_crqc_horizon_years=10),
         _business(
@@ -56,7 +56,8 @@ def test_low_business_impact_caps_critical_urgency_at_high() -> None:
         ),
     )
     assert result.explanation.urgency_tier == "critical"
-    assert result.risk_level == "high"
+    assert result.risk_level == "unknown"
+    assert "final priority: **unknown**" in result.explanation.markdown
 
 
 def test_extreme_migration_duration_and_uncertainty_are_auditable() -> None:

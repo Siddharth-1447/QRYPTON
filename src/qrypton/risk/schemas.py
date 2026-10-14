@@ -66,5 +66,5 @@ class RiskExplanation(DomainModel):
 
 class RiskAssessmentResult(DomainModel):
     matrix_version: RiskMatrixVersion
-    risk_level: Literal["critical", "high", "medium", "low"]
+    risk_level: Literal["critical", "high", "medium", "low", "unknown"]
     explanation: RiskExplanation

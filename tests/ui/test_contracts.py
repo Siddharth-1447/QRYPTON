@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from qrypton.contracts.enums import RiskLevel, RunStatus
+from qrypton.contracts.enums import MoscaUrgency, RiskLevel, RunStatus
 from qrypton.ui.contracts import (
     DashboardFilters,
     DashboardRunSummary,
@@ -100,7 +100,7 @@ def test_inventory_row_and_filters_contract() -> None:
 
 def test_risk_heatmap_cell_contract() -> None:
     cell = RiskHeatmapCell(
-        mosca_urgency=RiskLevel.UNKNOWN,
+        mosca_urgency=MoscaUrgency.UNKNOWN,
         business_criticality="unclassified",
         finding_count=3,
         finding_ids=("f1", "f2", "f3"),
@@ -108,7 +108,7 @@ def test_risk_heatmap_cell_contract() -> None:
     assert cell.business_criticality == "unclassified"
     with pytest.raises(ValidationError):
         RiskHeatmapCell(
-            mosca_urgency=RiskLevel.HIGH,
+            mosca_urgency=MoscaUrgency.HIGH,
             business_criticality="secret",  # type: ignore[arg-type]
             finding_count=1,
         )
@@ -117,7 +117,7 @@ def test_risk_heatmap_cell_contract() -> None:
 def test_mosca_point_unavailable_and_persisted_states() -> None:
     unavailable = MoscaPoint(
         finding_id="f1",
-        urgency=RiskLevel.CRITICAL,
+        urgency=MoscaUrgency.CRITICAL,
         exposure_score=95.0,
         timeline_state="unavailable",
     )
@@ -125,7 +125,7 @@ def test_mosca_point_unavailable_and_persisted_states() -> None:
     assert unavailable.x_data_lifetime_years is None
     persisted = MoscaPoint(
         finding_id="f1",
-        urgency=RiskLevel.LOW,
+        urgency=MoscaUrgency.LOW,
         exposure_score=20.0,
         x_data_lifetime_years=5.0,
         y_migration_years=2.0,

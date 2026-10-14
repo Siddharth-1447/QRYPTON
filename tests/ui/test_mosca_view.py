@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from qrypton.contracts.enums import RiskLevel
+from qrypton.contracts.enums import MoscaUrgency
 from qrypton.storage.sqlite import SqliteRunStore
 from qrypton.ui.sqlite_provider import SqliteDashboardDataProvider
 from tests.ui.conftest import create_sample_run
@@ -23,7 +23,7 @@ def test_mosca_points_copy_persisted_structured_evaluations(
     for point in view.mosca_points:
         record = stored[point.finding_id]
         assert point.timeline_state == "persisted"
-        assert point.urgency == RiskLevel(record.urgency)
+        assert point.urgency is MoscaUrgency(record.urgency)
         assert point.exposure_score == record.exposure_score
         assert point.x_data_lifetime_years == record.x_data_lifetime_years
         assert point.y_migration_years == record.y_migration_years
@@ -46,5 +46,5 @@ def test_mosca_points_unavailable_when_structured_evaluations_absent(tmp_path: P
         assert point.z_crqc_horizon_years is None
         assert point.required_security_years is None
         assert point.time_margin_years is None
-        assert point.urgency in (RiskLevel.CRITICAL, RiskLevel.HIGH)
-        assert point.exposure_score is not None
+        assert point.urgency is MoscaUrgency.UNKNOWN
+        assert point.exposure_score is None

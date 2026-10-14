@@ -29,15 +29,25 @@ def test_no_dynamic_code_execution_or_dangerous_subprocesses() -> None:
         def visit_Call(self, node: ast.Call) -> None:
             # Check for direct calls to eval(), exec(), os.system()
             if isinstance(node.func, ast.Name) and node.func.id in forbidden_calls:
-                self.violations.append(f"{self.filepath}:{node.lineno} dangerous call to {node.func.id}()")
+                self.violations.append(
+                    f"{self.filepath}:{node.lineno} dangerous call to {node.func.id}()"
+                )
             elif isinstance(node.func, ast.Attribute) and node.func.attr in forbidden_calls:
-                self.violations.append(f"{self.filepath}:{node.lineno} dangerous call to .{node.func.attr}()")
+                self.violations.append(
+                    f"{self.filepath}:{node.lineno} dangerous call to .{node.func.attr}()"
+                )
 
             # Check for subprocess calls with shell=True
             if isinstance(node.func, ast.Attribute) and node.func.attr in {"run", "Popen", "call"}:
                 for keyword in node.keywords:
-                    if keyword.arg == "shell" and isinstance(keyword.value, ast.Constant) and keyword.value.value is True:
-                        self.violations.append(f"{self.filepath}:{node.lineno} subprocess with shell=True")
+                    if (
+                        keyword.arg == "shell"
+                        and isinstance(keyword.value, ast.Constant)
+                        and keyword.value.value is True
+                    ):
+                        self.violations.append(
+                            f"{self.filepath}:{node.lineno} subprocess with shell=True"
+                        )
 
             self.generic_visit(node)
 

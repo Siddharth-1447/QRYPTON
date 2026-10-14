@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   LayoutDashboard,
+  Activity,
   History,
-  ScanSearch,
+  ClipboardList,
   FileSearch,
   Route,
   Lock,
@@ -13,22 +14,25 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
 } from "lucide-react";
-import { CryptoLockVisual } from "@/components/crypto-lock-visual";
+import { GlossaryText } from "@/components/glossary";
+import { Logo } from "@/components/logo";
+import { NETWORK_SAMPLE_MODE } from "@/lib/network-sample";
 
 export const NAV_SECTIONS = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { id: "scans", label: "Past Scans", icon: ScanSearch },
   { id: "results-section", label: "Results", icon: FileSearch },
   { id: "inventory", label: "Crypto Inventory", icon: Lock },
   { id: "risk", label: "Risk & Prioritization", icon: BarChart3 },
   { id: "roadmap", label: "Migration Roadmap", icon: Route },
-  { id: "reports", label: "Reports / CBOM", icon: History },
+  { id: "reports", label: "CBOM / Reports", icon: History },
   { id: "integrations", label: "Integrations", icon: Plug },
+  ...(NETWORK_SAMPLE_MODE ? [{ id: "live-scanner", label: "Network Inspection", icon: Activity }] : []),
+  { id: "your-scans", label: "Your Scans", icon: ClipboardList },
 ] as const;
 
-export const SIDEBAR_MIN_WIDTH = 176;
-export const SIDEBAR_MAX_WIDTH = 360;
-export const SIDEBAR_DEFAULT_WIDTH = 256;
+export const SIDEBAR_MIN_WIDTH = 240;
+export const SIDEBAR_MAX_WIDTH = 420;
+export const SIDEBAR_DEFAULT_WIDTH = 304;
 export const SIDEBAR_COLLAPSE_THRESHOLD = 140;
 
 interface SidebarProps {
@@ -88,55 +92,34 @@ export function Sidebar({
     };
   }, [dragging, onDragMove]);
 
-  // Fully minimized: hide the rail and expose a floating reopen button.
-  if (collapsed) {
-    return (
-      <button
-        type="button"
-        onClick={onToggleCollapsed}
-        title="Show navigation"
-        aria-label="Show navigation"
-        className="fixed left-4 top-4 z-40 hidden items-center justify-center rounded-lg bg-card p-2.5 text-muted-foreground shadow-md transition-colors hover:bg-[var(--surface-subtle)] hover:text-foreground lg:inline-flex"
-      >
-        <PanelLeftOpen className="h-4 w-4" aria-hidden="true" />
-      </button>
-    );
-  }
-
   return (
     <aside
       aria-label="Primary"
-      style={{ width }}
-      className={`fixed inset-y-0 left-0 z-40 hidden flex-col border-r border-border bg-card lg:flex ${
-        dragging ? "" : "transition-[width] duration-200"
+      style={{ width: collapsed ? 72 : width }}
+      className={`fixed inset-y-0 left-0 z-40 hidden flex-col border-r border-border bg-sidebar lg:flex ${
+        dragging ? "" : "qrypton-motion "
       }`}
     >
       {/* Brand */}
-      <div className={`flex items-center gap-3 border-b border-border px-5 py-5 ${compact ? "justify-center px-3" : ""}`}>
-        <CryptoLockVisual navbar />
-        {!compact && (
-          <div className="min-w-0 flex-1 leading-tight">
-            <p className="truncate font-mono text-base font-black tracking-widest text-foreground">QRYPTON</p>
-            <p className="truncate text-xs text-muted-foreground">Before the math changes.</p>
-          </div>
-        )}
-        {!compact && (
+      <div className={`flex items-center gap-2 border-b border-border px-4 py-5 ${compact || collapsed ? "flex-col justify-center" : ""}`}>
+        <Logo tone="on-dark" lockup={!compact && !collapsed} tagline={!compact && !collapsed ? "Before the math changes." : undefined} className={compact || collapsed ? "size-11 shrink-0" : "h-11 min-w-0 flex-1"} />
+        {(!compact || collapsed) && (
           <button
             type="button"
             onClick={onToggleCollapsed}
-            title="Minimize navigation"
-            aria-label="Minimize navigation"
-            className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-[var(--surface-subtle)] hover:text-foreground"
+            title={collapsed ? "Expand navigation" : "Show navigation icons only"}
+            aria-label={collapsed ? "Expand navigation" : "Show navigation icons only"}
+            className="rounded-md p-1.5 text-muted-foreground qrypton-motion hover:bg-[var(--surface-subtle)] hover:text-foreground"
           >
-            <PanelLeftClose className="h-4 w-4" aria-hidden="true" />
+            {collapsed ? <PanelLeftOpen className="h-4 w-4" aria-hidden="true" /> : <PanelLeftClose className="h-4 w-4" aria-hidden="true" />}
           </button>
         )}
       </div>
 
-      {/* Navigation — plain list like the reference: no bordered boxes, green tint on active */}
-      <nav className="flex-1 overflow-y-auto px-3 py-5" aria-label="Primary">
-        {!compact && <p className="qrypton-kicker px-3 pb-2">Command center</p>}
-        <ul className="flex flex-col gap-0.5">
+      {/* Navigation — plain list like the reference: no bordered boxes, neutral surface on active */}
+      <nav className={`flex-1 overflow-y-auto py-6 ${collapsed ? "px-2" : "px-4"}`} aria-label="Primary">
+        <ul className="relative isolate flex flex-col gap-0">
+          <li aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-10 rounded-lg bg-muted qrypton-motion   motion-reduce:transition-none" style={{ transform: `translateY(${Math.max(0, NAV_SECTIONS.findIndex((section) => section.id === active)) * 40}px)` }} />
           {NAV_SECTIONS.map(({ id, label, icon: Icon }) => {
             const isActive = active === id;
             return (
@@ -144,14 +127,14 @@ export function Sidebar({
                 <button
                   type="button"
                   onClick={() => onNavigate(id)}
-                  aria-current={isActive ? "page" : undefined}
-                  title={compact ? label : undefined}
-                  className={`group flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-                    compact ? "justify-center" : ""
+                  aria-current={isActive ? "location" : undefined}
+                  title={label}
+                  className={`group flex h-10 w-full items-center gap-3 rounded-lg px-4 py-2 text-[length:var(--type-13)] font-medium qrypton-motion ${
+                    compact || collapsed ? "justify-center px-2" : ""
                   } ${
                     isActive
-                      ? "bg-[rgba(200,255,61,0.12)] text-primary"
-                      : "text-muted-foreground hover:bg-white/5 hover:text-foreground"
+                      ? "text-primary"
+                      : "text-muted-foreground hover:bg-card hover:text-foreground"
                   }`}
                 >
                   <Icon
@@ -160,7 +143,7 @@ export function Sidebar({
                     }`}
                     aria-hidden="true"
                   />
-                  {!compact && <span className="truncate">{label}</span>}
+                  {!compact && !collapsed && <span className="truncate"><GlossaryText>{label}</GlossaryText></span>}
                 </button>
               </li>
             );
@@ -169,26 +152,35 @@ export function Sidebar({
       </nav>
 
       {/* Mouse resize handle */}
-      <div
+      {!collapsed && <div
         role="separator"
         aria-orientation="vertical"
         aria-label="Resize navigation"
-        title="Drag to resize · drag far left to minimize"
+        title="Drag to resize · double-click to reset"
+        tabIndex={0}
+        aria-valuemin={SIDEBAR_MIN_WIDTH}
+        aria-valuemax={SIDEBAR_MAX_WIDTH}
+        aria-valuenow={width}
+        onKeyDown={e => {
+          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+          e.preventDefault();
+          onWidthChange(e.key === "Home" ? SIDEBAR_MIN_WIDTH : e.key === "End" ? SIDEBAR_MAX_WIDTH : Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, width + (e.key === "ArrowLeft" ? -16 : 16))));
+        }}
         onMouseDown={(e) => {
           e.preventDefault();
           dragState.current = { startX: e.clientX, startWidth: width };
           setDragging(true);
         }}
-        onDoubleClick={onToggleCollapsed}
-        className="absolute inset-y-0 right-0 flex w-4 translate-x-1/2 cursor-ew-resize items-stretch justify-center bg-transparent"
+        onDoubleClick={() => onWidthChange(SIDEBAR_DEFAULT_WIDTH)}
+        className="group absolute inset-y-0 right-0 z-50 flex w-3 translate-x-1/2 cursor-ew-resize items-stretch justify-center bg-transparent focus-visible:outline-2 focus-visible:outline-primary"
       >
         <span
-          className={`my-2 w-1 rounded-full transition-colors ${
-            dragging ? "bg-primary" : "bg-transparent hover:bg-primary/50"
+          className={`my-2 w-1 rounded-full qrypton-motion ${
+            dragging ? "bg-primary" : "bg-transparent group-hover:bg-primary/50 group-focus-visible:bg-primary"
           }`}
           aria-hidden="true"
         />
-      </div>
+      </div>}
     </aside>
   );
 }

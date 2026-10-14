@@ -24,9 +24,11 @@ class PolicyIdentity(DomainModel):
 
 
 class RiskPolicy(PolicyIdentity):
-    """Opaque, versioned risk-policy identity for pure engine input."""
+    """Opaque policy identity plus an explicit deterministic crypto taxonomy."""
 
     kind: Literal["risk"] = "risk"
+    risk_taxonomy_version: Literal["1.0.0"] = "1.0.0"
+    priority_ruleset_version: Literal["1.0.0"] = "1.0.0"
 
 
 class PqcRecommendationPolicy(PolicyIdentity):

@@ -1,12 +1,21 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { AlertCircle, ArrowLeft, ArrowRight, CheckCircle2, Info, Loader2, Package, X } from "lucide-react";
-import { Alert, Badge, Button, Card, CardContent, CardHeader, CardTitle, Input } from "@/components/ui/primitives";
+import { Wordmark } from "./logo";
+
+import { GlossaryText } from "@/components/glossary";
+import { useEffect, useRef, useState } from "react";
+import { AlertCircle, ArrowLeft, ArrowRight, CheckCircle2, Loader2, Info, Package, X } from "lucide-react";
+import { Alert, RiskBadge, Button, Card, CardContent, CardHeader, CardTitle, Input } from "@/components/ui/primitives";
+import { BUSINESS_PRESETS, UNKNOWN_CONTEXT, parseBusinessContext } from "@/lib/business-context";
+import { ScanProgress } from "@/components/scan-progress";
+import { getScanPhaseMessage, type ScanStatus } from "@/lib/scan-polling";
+import { API_BASE } from "@/lib/api";
+import type { ReportChoice } from "@/lib/scan-download";
 
 export type ScanInputMode = "url" | "upload" | "local" | "arn" | "reference";
 
 export type ScanForm = {
+  report_download?: ReportChoice;
   target_type: string;
   /** Canonical locator: repo URL, container image reference (nginx:latest), KMS identifier (AWS ARN / Azure / GCP), server-local path, or upload://<id>. */
   repository: string;
@@ -18,8 +27,8 @@ export type ScanForm = {
   artifact_content_type: string;
   input_mode: ScanInputMode;
   branch: string; system_name: string; owner: string;
-  environment: string; business_criticality: string; data_sensitivity: string; data_lifetime: number;
-  internet_exposure: boolean; regulatory_relevance: string; migration_complexity: string;
+  environment: string; business_criticality: string; data_sensitivity: string; data_lifetime: number | null;
+  internet_exposure: boolean | null; regulatory_relevance: string; migration_complexity: string;
   migration_time: number; crqc_horizon: number;
 };
 
@@ -35,56 +44,43 @@ export const DEFAULT_SCAN_FORM: ScanForm = {
   branch: "",
   system_name: "",
   owner: "",
-  environment: "production",
-  business_criticality: "critical",
-  data_sensitivity: "restricted",
-  data_lifetime: 7.0,
-  internet_exposure: true,
-  regulatory_relevance: "regulated",
-  migration_complexity: "high",
+  environment: "unclassified",
+  business_criticality: "unclassified",
+  data_sensitivity: "unclassified",
+  data_lifetime: null,
+  internet_exposure: null,
+  regulatory_relevance: "unclassified",
+  migration_complexity: "unclassified",
   migration_time: 4.0,
   crqc_horizon: 8.0,
 };
 
-export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 const MAX_UPLOAD_BYTES = 64 * 1024 * 1024;
 type Props = {
+  progress?: ScanStatus | null;
   open: boolean;
   onClose: () => void;
   form: ScanForm;
   setForm: (form: ScanForm) => void;
   onSubmit: () => Promise<void>;
+  onReset: () => void;
   submitting: boolean;
   successMessage: string | null;
   submitError?: string | null;
   polling?: boolean;
   phaseMessage?: string | null;
   elapsedMs?: number;
+  onShowResults?: () => void;
 };
 
-// Dynamic polling timeouts by target type (mirrors page.tsx).
-export const SCAN_TIMEOUT_DEFAULT_MS = 15000; // Archives, Binaries, Manifests, KMS
-export const SCAN_TIMEOUT_MEDIUM_MS = 60000; // Source Repositories
-export const SCAN_TIMEOUT_EXTENDED_MS = 120000; // Container Images, Heavy Repos
-const HEAVY_REPO_HINT = /(monorepo|heavy|large|enterprise|chromium|linux|kernel|opencv|tensorflow)/i;
-
-export function getScanTimeoutForTarget(targetType: string, repository?: string): number {
-  const normalized = String(targetType ?? "").trim().toLowerCase();
-  if (normalized === "container_image") return SCAN_TIMEOUT_EXTENDED_MS;
-  if (normalized === "source_repo") {
-    const repo = String(repository ?? "");
-    const isHeavy =
-      HEAVY_REPO_HINT.test(repo) || repo.length > 80 || (repo.match(/\//g) ?? []).length > 4;
-    return isHeavy ? SCAN_TIMEOUT_EXTENDED_MS : SCAN_TIMEOUT_MEDIUM_MS;
-  }
-  return SCAN_TIMEOUT_DEFAULT_MS;
+export function formatElapsedTime(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remSec = seconds % 60;
+  return `${minutes}m ${remSec}s`;
 }
 
-export function getScanPhaseMessage(elapsedMs: number): string {
-  if (elapsedMs < 5000) return "Connecting to target & initializing engine...";
-  if (elapsedMs < 15000) return "Fetching remote assets & parsing static patterns...";
-  return "Deep AST analysis & generating CycloneDX 1.6 CBOM...";
-}
 const steps = ["Target type", "Provide target", "Business context", "Review & start"];
 const stages = ["Acquiring target", "Validating target", "Discovering evidence", "Normalizing cryptographic observations", "Correlating duplicate evidence", "Assessing risk", "Generating recommendations", "Preparing CBOM / report"];
 const targetTypes = [
@@ -383,9 +379,9 @@ export function buildReviewRows(form: ScanForm): Array<[string, string]> {
     ["Risk context", `${form.environment} · ${form.business_criticality} · ${form.data_sensitivity}`],
     [
       "Resource limits",
-      `Static inspection only · no execution · ${(getScanTimeoutForTarget(form.target_type, form.repository) / 1000).toFixed(0)}s timeout`,
+      "Static inspection only · no execution · status monitoring for up to 15 minutes",
     ],
-    ["Mosca", `X ${form.data_lifetime} + Y ${form.migration_time} vs Z ${form.crqc_horizon}`]
+    ["Mosca", `X ${form.data_lifetime ?? "Unknown / Not provided"} + Y ${form.migration_time} vs Z ${form.crqc_horizon}`]
   );
   return rows;
 }
@@ -536,32 +532,44 @@ export function buildArtifactMetadata(form: Pick<ScanForm, "artifact_name" | "ar
   return meta;
 }
 
-export function ScanWorkflow({ open, onClose, form, setForm, onSubmit, submitting, successMessage, submitError, polling, phaseMessage, elapsedMs }: Props) {
+export function ScanWorkflow({ progress = null, open, onClose, form, setForm, onSubmit, onReset, submitting, successMessage, submitError, polling, phaseMessage, elapsedMs, onShowResults }: Props) {
+  const scrollToResults = () => {
+    if (onShowResults) {
+      onShowResults();
+      return;
+    }
+    document.getElementById("results-section")?.scrollIntoView({ behavior: "instant", block: "start" });
+  };
   const [step, setStep] = useState(1);
   const [error, setError] = useState<string | null>(null);
-  const [stage, setStage] = useState<number | null>(null);
+  const [executionError, setExecutionError] = useState<string | null>(null);
   const [localElapsedMs, setLocalElapsedMs] = useState(0);
-  const activeTimeoutMs = getScanTimeoutForTarget(form.target_type, form.repository);
   // Tick a local elapsed clock while the scan is running so the live status
   // message stays fresh even between polling callbacks.
   useEffect(() => {
-    if (stage === null || stage === stages.length) return;
+    if (!submitting && !polling) return;
     const startedAt = Date.now() - (elapsedMs ?? 0);
     const timer = window.setInterval(() => {
-      const next = Date.now() - startedAt;
-      setLocalElapsedMs(next);
+      setLocalElapsedMs(Date.now() - startedAt);
     }, 500);
     return () => window.clearInterval(timer);
-  }, [stage, elapsedMs]);
+  }, [submitting, polling, elapsedMs]);
   const effectiveElapsedMs = elapsedMs ?? localElapsedMs;
   const livePhaseMessage = phaseMessage ?? getScanPhaseMessage(effectiveElapsedMs);
-  const update = (patch: Partial<ScanForm>) => setForm({ ...form, ...patch });
+  const contextRevision = useRef(0);
+  const previousContextTarget = useRef("");
+  const update = (patch: Partial<ScanForm>) => {
+    contextRevision.current += 1;
+    setForm({ ...form, ...patch });
+  };
+  const [suggestionLabel, setSuggestionLabel] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const spec = specForTarget(form.target_type);
-  const incomplete = !form.system_name || !form.owner || !form.data_sensitivity || !form.regulatory_relevance || !form.migration_complexity;
-  const exposed = form.data_lifetime + form.migration_time > form.crqc_horizon;
+  const incomplete = form.data_lifetime === null || !form.system_name || !form.owner || form.environment === "unclassified" || form.business_criticality === "unclassified" || form.data_sensitivity === "unclassified" || form.regulatory_relevance === "unclassified" || form.migration_complexity === "unclassified" || form.internet_exposure === null;
+  const exposed = (form.data_lifetime ?? 0) + form.migration_time > form.crqc_horizon;
   /** Switching target types resets the artifact inputs so a repo link can never leak into KMS/binary flows. */
   const selectTargetType = (targetType: string) => {
+    contextRevision.current += 1;
     const nextSpec = specForTarget(targetType);
     setForm({
       ...form,
@@ -578,6 +586,7 @@ export function ScanWorkflow({ open, onClose, form, setForm, onSubmit, submittin
     setError(null);
   };
   const selectInputMode = (mode: ScanInputMode) => {
+    contextRevision.current += 1;
     setForm({ ...form, input_mode: mode, repository: "", artifact_id: null, artifact_name: "", artifact_format: "", artifact_size_bytes: null, artifact_content_type: "" });
     setError(null);
   };
@@ -599,7 +608,7 @@ export function ScanWorkflow({ open, onClose, form, setForm, onSubmit, submittin
       const res = await fetch(`${API_BASE}/api/v1/uploads`, {
         method: "POST",
         body,
-        signal: AbortSignal.timeout(activeTimeoutMs),
+        signal: AbortSignal.timeout(30_000),
       });
       if (!res.ok) {
         let detail = `Upload failed (HTTP ${res.status}).`;
@@ -689,73 +698,100 @@ export function ScanWorkflow({ open, onClose, form, setForm, onSubmit, submittin
   const validate = () => {
     if (step === 1 && !form.target_type) return "Select a target type.";
     if (step === 2) return validateTargetStep();
-    if (step === 3 && (!form.system_name.trim() || !form.owner.trim())) return "System name and owner are required.";
-    if ([form.data_lifetime, form.migration_time, form.crqc_horizon].some((v) => v < 0)) return "Horizon values cannot be negative.";
+    if ([form.data_lifetime, form.migration_time, form.crqc_horizon].some((v) => v !== null && (!Number.isFinite(v) || v < 0 || v > 10000))) return "Horizon values must be between 0 and 10,000 years.";
     return null;
   };
-  const next = () => { const issue = validate(); if (issue) setError(issue); else { setError(null); setStep((v) => v + 1); } };
+  const [loadingContext, setLoadingContext] = useState(false);
+  const next = async () => {
+    if (loadingContext) return;
+    const revision = contextRevision.current;
+    const targetKey = JSON.stringify([form.target_type, form.repository.trim(), form.branch]);
+    const issue = validate();
+    if (issue) { setError(issue); return; }
+    setError(null);
+    if (step === 2 && targetKey !== previousContextTarget.current) {
+      setLoadingContext(true);
+      setSuggestionLabel(null);
+      try {
+        const params = new URLSearchParams({ target_type: form.target_type, repository: form.repository.trim(), branch: form.branch });
+        const response = await fetch(`${API_BASE}/api/v1/scan-context?${params}`, { signal: AbortSignal.timeout(5000), cache: "no-store" });
+        if (!response.ok) throw new Error("Context lookup unavailable");
+        const context = parseBusinessContext((await response.json()).context);
+        if (revision !== contextRevision.current) return;
+        previousContextTarget.current = targetKey;
+        setForm({ ...form, ...(context ?? UNKNOWN_CONTEXT) });
+        if (context) setSuggestionLabel("Suggested from previous scan");
+      } catch {
+        if (revision !== contextRevision.current) return;
+        setForm({ ...form, ...UNKNOWN_CONTEXT });
+        setSuggestionLabel("Previous context unavailable. Choose a preset or enter context below.");
+      } finally { setLoadingContext(false); }
+    }
+    if (revision === contextRevision.current) setStep((v) => v + 1);
+  };
+  const visibleError = error || executionError || submitError;
+  // Field validation keeps the editable wizard visible; only a submitted run can halt.
+  const isFailed = Boolean(executionError || submitError);
+
+  const stage = successMessage && !isFailed ? stages.length : submitting || polling || isFailed ? 0 : null;
+
   useEffect(() => {
     if (!open) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- reset wizard when modal closes
       setStep(1);
+      contextRevision.current += 1;
+      previousContextTarget.current = "";
       setError(null);
-      setStage(null);
+      setExecutionError(null);
       setLocalElapsedMs(0);
     }
   }, [open]);
+
   const start = async () => {
     const issue = validate();
     if (issue) return setError(issue);
     setError(null);
-    setStage(0);
-    // Dynamic timeout budget derived from the selected target type.
-    const SCAN_TIMEOUT = getScanTimeoutForTarget(form.target_type, form.repository);
-    const POLLING_TIMEOUT = SCAN_TIMEOUT;
-    const startTime = Date.now();
+    setExecutionError(null);
+    setLocalElapsedMs(0);
     try {
-      const submitPromise = onSubmit();
-      for (let i = 0; i < stages.length; i += 1) {
-        // Check if we've exceeded the polling timeout
-        if (Date.now() - startTime > POLLING_TIMEOUT) {
-          console.warn(`Polling timeout exceeded after ${POLLING_TIMEOUT}ms, forcing completion`);
-          setStage(stages.length);
-          break;
-        }
-        setStage(i);
-        await Promise.race([
-          submitPromise.then(() => undefined).catch(() => undefined),
-          new Promise((resolve) => window.setTimeout(resolve, 350)),
-        ]);
-      }
-      // Add timeout to final await to prevent infinite loading on CBOM preparation
-      await Promise.race([
-        submitPromise.then(() => undefined).catch(() => undefined),
-        new Promise((resolve) => window.setTimeout(resolve, SCAN_TIMEOUT)),
-      ]);
-      setStage(stages.length);
+      await onSubmit();
     } catch (err) {
-      // Capture current stage value for the timeout callback
-      const currentStage = stage;
-      setStage(null);
-      setError(err instanceof Error ? err.message : "Scan failed.");
-      // Fallback: force completion after error to prevent stuck state
-      setTimeout(() => {
-        if (currentStage !== null && currentStage !== stages.length) {
-          console.warn("Forcing scan completion due to error during polling");
-          setStage(stages.length);
-        }
-      }, 2000);
+      setExecutionError(err instanceof Error ? err.message : "Scan failed.");
     }
   };
-  const close = () => { setStep(1); setError(null); setStage(null); onClose(); };
-  const visibleError = error || submitError;
+  const close = () => { setStep(1); setError(null); onClose(); };
+  const back = () => {
+    if (submitting || polling || uploading) return;
+    setError(null);
+    setExecutionError(null);
+    if (isFailed || successMessage) {
+      onReset();
+      setLocalElapsedMs(0);
+      setStep(2);
+    } else if (step === 1) {
+      close();
+    } else {
+      setStep((value) => value - 1);
+    }
+  };
   if (!open) return null;
-  return <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true"><button className="absolute inset-0 bg-foreground/40 backdrop-blur-sm" aria-label="Close" onClick={close} /><Card className="relative flex max-h-[calc(100vh-2rem)] w-full max-w-3xl flex-col overflow-hidden bg-card"><CardHeader className="border-b border-border p-5"><div className="flex justify-between gap-4"><div><p className="qrypton-kicker">Guided workflow</p><CardTitle className="mt-1">New cryptographic scan</CardTitle><p className="mt-1 text-sm text-muted-foreground">Static inspection only—QRYPTON does not execute, deploy, or modify a target.</p></div><Button variant="ghost" onClick={close}><X /></Button></div><div className="mt-5 flex gap-2 overflow-x-auto">{steps.map((label, i) => <div key={`${label}-${i}`} className="flex items-center gap-2"><span className={`flex size-7 items-center justify-center rounded-full text-xs ${i + 1 <= step ? "bg-primary text-primary-foreground" : "border border-border"}`}>{i + 1}</span><span className="text-xs text-muted-foreground">{label}</span></div>)}</div></CardHeader><CardContent className="overflow-y-auto p-5">
-    {stage !== null ? <div className="space-y-3"><h3 className="font-semibold">{stage === stages.length ? (successMessage || "Scan completed") : "Scan in progress"}</h3><p className="text-sm text-muted-foreground">{stage === stages.length ? "Opening results." : `Inspecting the target (${form.target_type} · ${(activeTimeoutMs / 1000).toFixed(0)}s budget). Keep this window open until the run finishes.`}</p><div className="flex items-center gap-3 rounded-md border border-primary/40 bg-primary/5 p-3 text-sm" role="status" aria-live="polite">{submitting || polling || stage < stages.length ? <Loader2 className="size-5 animate-spin text-primary" /> : <CheckCircle2 className="size-5 text-emerald-400" />}<span>{submitting || polling || stage < stages.length ? livePhaseMessage : "Results are ready."}</span></div>{stage !== stages.length && <p className="text-xs tabular-nums text-muted-foreground" aria-live="polite">Elapsed {(effectiveElapsedMs / 1000).toFixed(1)}s of {(activeTimeoutMs / 1000).toFixed(0)}s · polling every 1.5s</p>}{stages.map((label, i) => <div key={`${label}-${i}`} className={`flex items-center gap-3 rounded-md border p-3 text-sm ${i < stage ? "border-emerald-500/30 bg-emerald-500/10" : i === stage ? "border-primary bg-primary/5" : "border-border text-muted-foreground"}`}>{i < stage || stage === stages.length ? <CheckCircle2 className="size-4 text-emerald-400" /> : i === stage ? <Loader2 className="size-4 animate-spin text-primary" /> : <span className="size-4" />}{i + 1}. {label}</div>)}</div> : <>
-    {step === 1 && <div><h3 className="font-semibold">Select target type</h3><p className="mt-1 text-sm text-muted-foreground">Select what contains the cryptographic evidence.</p><div className="mt-4 grid gap-3 sm:grid-cols-2">{targetTypes.map(([value, label, note]) => <button key={value} type="button" onClick={() => selectTargetType(value)} className={`rounded-lg border p-4 text-left ${form.target_type === value ? "border-primary bg-primary/5 ring-1 ring-primary" : "border-border hover:bg-muted"}`}><span className="block text-sm font-semibold">{label}</span><span className="mt-1 block text-xs leading-5 text-muted-foreground">{note}</span></button>)}</div></div>}
+  const isWorkflowActive = stage !== null || isFailed;
+
+  return <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true"><button className="absolute inset-0 bg-foreground/40 backdrop-blur-sm" aria-label="Close" onClick={close} /><Card className="relative flex max-h-[calc(100vh-2rem)] w-full max-w-3xl flex-col overflow-hidden bg-card"><CardHeader className="border-b border-border p-6"><div className="flex justify-between gap-4"><div><CardTitle>New Cryptographic Scan</CardTitle><p className="mt-1 text-sm text-muted-foreground">Static inspection only—<Wordmark /> does not execute, deploy, or modify a target.</p></div><Button variant="ghost" onClick={close}><X /></Button></div><div className="mt-5 flex gap-2 overflow-x-auto">{steps.map((label, i) => <div key={`${label}-${i}`} className="flex items-center gap-2"><span className={`flex size-7 items-center justify-center rounded-full text-xs ${i + 1 === step ? "bg-primary text-primary-foreground" : "border border-border"}`}>{i + 1}</span><span className="text-xs text-muted-foreground">{label}</span></div>)}</div></CardHeader><CardContent className="overflow-y-auto p-6">
+    {isWorkflowActive ? <div className="space-y-4">
+      <h3 className="font-semibold">{isFailed ? "Scan Needs Attention" : successMessage || "Scan in Progress"}</h3>
+      <p role="status" className="text-sm text-muted-foreground">{visibleError || (successMessage ? "Results are ready." : livePhaseMessage)}</p>
+      <p className="text-sm text-muted-foreground">You can leave this page. The scan continues in the background and appears in Scan History. Completion notifications appear here when you return.</p>
+      <ScanProgress progress={progress} />
+      <Button variant="ghost" onClick={close}>Continue in background</Button>
+    </div> : <>
+    {step === 1 && <div><h3 className="font-semibold">Select Target Type</h3><p className="mt-1 text-sm text-muted-foreground">Select what contains the cryptographic evidence.</p><div className="mt-4 grid gap-4 sm:grid-cols-2">{targetTypes.map(([value, label, note]) => <button key={value} type="button" onClick={() => selectTargetType(value)} className={`rounded-lg border p-4 text-left ${form.target_type === value ? "border-primary bg-primary/5 ring-1 ring-primary" : "border-border hover:bg-muted"}`}><span className="block text-sm font-semibold"><GlossaryText>{label}</GlossaryText></span><span className="mt-1 block text-xs leading-5 text-muted-foreground"><GlossaryText>{note}</GlossaryText></span></button>)}</div></div>}
     {step === 2 && <TargetInputs form={form} update={update} spec={spec} uploading={uploading} onSelectMode={selectInputMode} onFileSelected={(file) => void onFileSelected(file)} onClearUpload={onClearUpload} />}
-    {step === 3 && <div className="space-y-4"><h3 className="font-semibold">Business context</h3><div className="grid gap-3 sm:grid-cols-2"><Field label="System name" value={form.system_name} onChange={(v) => update({ system_name: v })} placeholder="e.g. payments-core" /><Field label="Owner" value={form.owner} onChange={(v) => update({ owner: v })} placeholder="e.g. team-crypto" /><Select label="Environment" value={form.environment} options={["production", "staging", "development"]} onChange={(v) => update({ environment: v })} /><Select label="Business criticality" value={form.business_criticality} options={["critical", "high", "medium", "low"]} onChange={(v) => update({ business_criticality: v })} /><Select label="Data sensitivity" value={form.data_sensitivity} options={["restricted", "confidential", "internal", "public"]} onChange={(v) => update({ data_sensitivity: v })} /><Select label="Regulatory relevance" value={form.regulatory_relevance} options={["regulated", "contractual", "none"]} onChange={(v) => update({ regulatory_relevance: v })} /><Select label="Migration complexity" value={form.migration_complexity} options={["high", "medium", "low"]} onChange={(v) => update({ migration_complexity: v })} /><label className="flex items-center gap-3 rounded-md border border-border p-3 text-sm"><input type="checkbox" checked={form.internet_exposure} onChange={(e) => update({ internet_exposure: e.target.checked })} />Internet exposed</label></div><div className="rounded-lg border border-border bg-muted/40 p-4"><div className="flex justify-between"><span className="text-sm font-semibold">Mosca urgency: X + Y vs Z</span><Badge tone={exposed ? "critical" : "success"}>{exposed ? "Urgent" : "Within horizon"}</Badge></div><div className="mt-3 grid gap-3 sm:grid-cols-3"><NumberField label="Data lifetime X" value={form.data_lifetime} onChange={(v) => update({ data_lifetime: v })} /><NumberField label="Migration effort Y" value={form.migration_time} onChange={(v) => update({ migration_time: v })} /><NumberField label="CRQC horizon Z" value={form.crqc_horizon} onChange={(v) => update({ crqc_horizon: v })} /></div></div>{incomplete && <Alert className="border-amber-500/30 bg-amber-500/10"><AlertCircle className="text-amber-400" /><span>Business context incomplete — confidence reduced. Missing context does not lower risk.</span></Alert>}</div>}
-    {step === 4 && <div className="space-y-4"><h3 className="font-semibold">Review scope and limits</h3><div className="divide-y divide-border rounded-lg border border-border">{buildReviewRows(form).map(([label, value]) => <div key={label} className="flex justify-between gap-4 p-3 text-sm"><span className="text-muted-foreground">{label}</span><span className="text-right font-medium break-all">{value}</span></div>)}</div></div>}</>}{visibleError && <Alert className="mt-4 border-destructive/30 bg-rose-500/10"><AlertCircle className="text-destructive" /><span>{visibleError}</span></Alert>}</CardContent><div className="flex justify-between border-t border-border p-5"><Button variant="ghost" onClick={step === 1 ? close : () => setStep((v) => v - 1)} disabled={stage !== null}><ArrowLeft />{step === 1 ? "Cancel" : "Back"}</Button>{stage === null && (step < 4 ? <Button onClick={next} disabled={uploading}>{uploading ? "Uploading…" : <>Continue <ArrowRight /></>}</Button> : <Button onClick={start} disabled={submitting || uploading}><Package />{uploading ? "Uploading…" : "Start scan"}</Button>)}{stage === stages.length && <Button onClick={close}>Close</Button>}</div></Card></div>;
+    {step === 3 && <div className="space-y-4"><h3 className="font-semibold">Business Context</h3>
+      <p className="text-sm text-muted-foreground">Choose a starting point. All values remain editable; lifetime is in years.</p>
+      <div className="flex flex-wrap gap-2">{Object.entries(BUSINESS_PRESETS).map(([name, context]) => <Button key={name} variant="secondary" onClick={() => { update(context); setSuggestionLabel(`Template: ${name}`); }}>{name}</Button>)}<Button variant="ghost" onClick={() => { update(UNKNOWN_CONTEXT); setSuggestionLabel(null); }}>Unknown / Not provided</Button></div>
+      {suggestionLabel && <p role="status" className="text-sm text-secondary">{suggestionLabel}</p>}<div className="grid gap-4 sm:grid-cols-2"><Field label="System name" value={form.system_name} onChange={(v) => update({ system_name: v })} placeholder="e.g. payments-core" /><Field label="Owner" value={form.owner} onChange={(v) => update({ owner: v })} placeholder="e.g. team-crypto" /><Select label="Environment" value={form.environment} options={["production", "staging", "development"]} onChange={(v) => update({ environment: v })} /><Select label="Business criticality" value={form.business_criticality} options={["critical", "high", "medium", "low"]} onChange={(v) => update({ business_criticality: v })} /><Select label="Data sensitivity" value={form.data_sensitivity} options={["restricted", "confidential", "internal", "public"]} onChange={(v) => update({ data_sensitivity: v })} /><Select label="Regulatory relevance" value={form.regulatory_relevance} options={["regulated", "contractual", "none"]} onChange={(v) => update({ regulatory_relevance: v })} /><Select label="Migration complexity" value={form.migration_complexity} options={["high", "medium", "low"]} onChange={(v) => update({ migration_complexity: v })} /><Select label="Internet exposure" value={form.internet_exposure === null ? "unclassified" : form.internet_exposure ? "yes" : "no"} options={["yes", "no"]} onChange={(v) => update({ internet_exposure: v === "unclassified" ? null : v === "yes" })} /></div><div className="rounded-lg border border-border bg-muted/40 p-4"><div className="flex justify-between"><span className="text-sm font-semibold"><GlossaryText>{"Mosca urgency: X + Y vs Z"}</GlossaryText></span><span className="flex flex-wrap items-center gap-2"><RiskBadge level={form.data_lifetime == null || form.migration_time == null || form.crqc_horizon == null ? "unknown" : exposed ? "critical" : "safe"} /><span className="text-xs text-muted-foreground">{form.data_lifetime == null || form.migration_time == null || form.crqc_horizon == null ? "Enter timeline inputs" : exposed ? "Urgent" : "Within horizon"}</span></span></div><div className="mt-3 grid gap-4 sm:grid-cols-3"><NumberField label="Data lifetime X" value={form.data_lifetime} onChange={(v) => update({ data_lifetime: v })} placeholder="Unknown / Not provided" /><NumberField label="Migration effort Y" value={form.migration_time} onChange={(v) => update({ migration_time: v ?? 0 })} placeholder="e.g. 2" /><NumberField label="CRQC horizon Z" value={form.crqc_horizon} onChange={(v) => update({ crqc_horizon: v ?? 0 })} placeholder="e.g. 10" /></div></div>{incomplete && <Alert className="border-border bg-muted"><AlertCircle className="text-secondary" /><span>Business context incomplete: prioritization confidence reduced</span></Alert>}</div>}
+    {step === 4 && <div className="space-y-4"><h3 className="font-semibold">Review Scope and Limits</h3><fieldset className="rounded-lg border border-border p-4"><label className="flex items-center gap-3 text-sm font-medium"><input type="checkbox" checked={!!form.report_download && form.report_download !== "none"} onChange={event => setForm({ ...form, report_download: event.target.checked ? "pdf" : "none" })} />Download reports when this scan finishes</label>{form.report_download && form.report_download !== "none" && <div className="mt-3"><label className="flex flex-col gap-2 text-sm">Report Format<select value={form.report_download} onChange={event => setForm({ ...form, report_download: event.target.value as ReportChoice })} className="rounded-md border border-input bg-card p-2"><option value="pdf">PDF report</option><option value="json">JSON CBOM</option><option value="csv">CSV inventory</option><option value="all">All — PDF, JSON, and CSV</option></select></label><p className="mt-2 text-xs text-muted-foreground">Downloads use only this scan’s saved results. For All, allow multiple downloads in your browser. You can also download them later from Results.</p></div>}</fieldset>{incomplete && <p role="status" className="text-sm text-muted-foreground">Business context incomplete: prioritization confidence reduced</p>}<div className="divide-y divide-border rounded-lg border border-border">{buildReviewRows(form).map(([label, value]) => <div key={label} className="flex justify-between gap-4 p-4 text-sm"><span className="text-muted-foreground"><GlossaryText>{label}</GlossaryText></span><span className="text-right font-medium break-all"><GlossaryText>{value}</GlossaryText></span></div>)}</div></div>}</>}{visibleError && <Alert className="mt-4 border-input bg-muted"><AlertCircle className="text-secondary" /><span>{visibleError}</span></Alert>}</CardContent><div className="flex justify-between border-t border-border p-6"><Button variant="ghost" onClick={back} disabled={submitting || polling || uploading || loadingContext}><ArrowLeft />{isFailed ? "Back to target" : successMessage ? "New scan" : step === 1 ? "Cancel" : "Back"}</Button>{stage === null && !isFailed && (step < 4 ? <Button onClick={next} disabled={uploading || loadingContext}>{loadingContext ? "Looking up previous context…" : uploading ? "Uploading…" : <>Continue <ArrowRight /></>}</Button> : <Button onClick={start} disabled={submitting || uploading}><Package />{uploading ? "Uploading…" : "Start scan"}</Button>)}{stage === stages.length && !isFailed && <div className="flex items-center gap-2"><Button variant="ghost" onClick={close}>Close</Button><Button onClick={scrollToResults}>Show Results <ArrowRight /></Button></div>}</div></Card></div>;
 }
 function TargetInputs({
   form,
@@ -774,11 +810,12 @@ function TargetInputs({
   onFileSelected: (file: File | undefined) => void;
   onClearUpload: () => void;
 }) {
+  const [dragActive, setDragActive] = useState(false);
   return (
     <div className="space-y-4">
       <div>
         <h3 className="font-semibold">{spec.title}</h3>
-        <p className="mt-1 text-sm text-muted-foreground">{spec.subtitle}</p>
+        <p className="mt-1 text-sm text-muted-foreground"><GlossaryText>{spec.subtitle}</GlossaryText></p>
       </div>
       {spec.modes.length > 1 && (
         <div className="flex flex-wrap gap-2" role="tablist" aria-label="Input method">
@@ -789,7 +826,7 @@ function TargetInputs({
               role="tab"
               aria-selected={form.input_mode === mode}
               onClick={() => onSelectMode(mode)}
-              className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+              className={`rounded-full border px-4 py-1.5 text-xs font-semibold qrypton-motion ${
                 form.input_mode === mode
                   ? "border-primary bg-primary/10 text-primary"
                   : "border-border text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -801,10 +838,11 @@ function TargetInputs({
         </div>
       )}
       {form.input_mode === "url" && (
-        <div className="space-y-3">
+        <div className="space-y-4">
           <label className="flex flex-col gap-2 text-sm font-medium">
             Repository URL
             <Input
+              className="font-mono"
               value={form.repository}
               onChange={(e) => update({ repository: e.target.value })}
               placeholder={spec.urlPlaceholder}
@@ -825,13 +863,13 @@ function TargetInputs({
         </div>
       )}
       {form.input_mode === "upload" && (
-        <div className="space-y-3">
+        <div className="space-y-4">
           {form.artifact_id ? (
-            <div className="flex items-center justify-between gap-3 rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm">
+            <div className="flex items-center justify-between gap-4 rounded-md border border-border bg-muted p-4 text-sm">
               <span className="flex min-w-0 flex-col gap-0.5 font-medium">
                 <span className="flex items-center gap-2">
-                  <CheckCircle2 className="size-4 shrink-0 text-emerald-400" aria-hidden="true" />
-                  <span className="break-all">{form.artifact_name}</span>
+                  <CheckCircle2 className="size-4 shrink-0 text-secondary" aria-hidden="true" />
+                  <span className="break-all font-mono font-normal">{form.artifact_name}</span>
                 </span>
                 <span className="pl-6 text-xs font-normal text-muted-foreground">
                   {(form.artifact_format || artifactFormatFromName(form.artifact_name))} · {formatBytes(form.artifact_size_bytes)} · uploaded artifact — the original bytes reach the scanner
@@ -846,12 +884,23 @@ function TargetInputs({
               </button>
             </div>
           ) : (
-            <label className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border p-6 text-center transition-colors hover:border-primary hover:bg-primary/5">
+            <label
+              className={`flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border border-dashed p-6 text-center qrypton-motion ${dragActive ? "border-primary bg-primary/10" : "border-border hover:border-primary hover:bg-primary/5"}`}
+              onDragOver={(e) => { e.preventDefault(); if (!uploading) setDragActive(true); }}
+              onDragLeave={() => setDragActive(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragActive(false);
+                if (uploading) return;
+                const file = e.dataTransfer.files?.[0];
+                if (file) onFileSelected(file);
+              }}
+            >
               <Package className="size-6 text-muted-foreground" aria-hidden="true" />
               <span className="text-sm font-semibold">
-                {uploading ? "Uploading artifact…" : spec.uploadCta}
+                {uploading ? "Uploading artifact…" : dragActive ? "Drop file to upload" : spec.uploadCta}
               </span>
-              <span className="text-xs text-muted-foreground">Max 64 MiB · never executed</span>
+              <span className="text-xs text-muted-foreground">Drag &amp; drop or click to browse · Max 64 MiB · never executed</span>
               <input
                 type="file"
                 className="sr-only"
@@ -862,7 +911,7 @@ function TargetInputs({
                   e.target.value = "";
                 }}
               />
-              {uploading && <Loader2 className="size-4 animate-spin text-primary" aria-hidden="true" />}
+              {uploading && <Loader2 className="size-4  text-secondary" aria-hidden="true" />}
             </label>
           )}
           <p className="text-xs leading-5 text-muted-foreground">{spec.uploadHint}</p>
@@ -872,10 +921,11 @@ function TargetInputs({
         </div>
       )}
       {form.input_mode === "local" && (
-        <div className="space-y-3">
+        <div className="space-y-4">
           <label className="flex flex-col gap-2 text-sm font-medium">
             {spec.localLabel || "Server-local path"}
             <Input
+              className="font-mono"
               value={form.repository}
               onChange={(e) => update({ repository: e.target.value })}
               placeholder={spec.localPlaceholder}
@@ -885,10 +935,11 @@ function TargetInputs({
         </div>
       )}
       {form.input_mode === "reference" && (
-        <div className="space-y-3">
+        <div className="space-y-4">
           <label className="flex flex-col gap-2 text-sm font-medium">
             Container image reference
             <Input
+              className="font-mono"
               value={form.repository}
               onChange={(e) => update({ repository: e.target.value })}
               placeholder={spec.referencePlaceholder}
@@ -898,10 +949,11 @@ function TargetInputs({
         </div>
       )}
       {form.input_mode === "arn" && (
-        <div className="space-y-3">
+        <div className="space-y-4">
           <label className="flex flex-col gap-2 text-sm font-medium">
             KMS key identifier (ARN / Azure / GCP)
             <Input
+              className="font-mono"
               value={form.repository}
               onChange={(e) => update({ repository: e.target.value })}
               placeholder={spec.arnPlaceholder}
@@ -913,13 +965,13 @@ function TargetInputs({
         </div>
       )}
       <Alert className="bg-muted/50">
-        <Info className="text-primary" />
-        <span>Static inspection only — QRYPTON does not execute, deploy, or modify the target.</span>
+        <Info className="text-secondary" />
+        <span>Static inspection only — <Wordmark /> does not execute, deploy, or modify the target.</span>
       </Alert>
     </div>
   );
 }
 
 function Field({ label, value, onChange, placeholder }: { label: string; value: string; onChange: (value: string) => void; placeholder?: string }) { return <label className="flex flex-col gap-2 text-sm font-medium">{label}<Input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} /></label>; }
-function Select({ label, value, options, onChange }: { label: string; value: string; options: string[]; onChange: (value: string) => void }) { return <label className="flex flex-col gap-2 text-sm font-medium">{label}<select className="h-9 rounded-md border border-border bg-card px-3 text-sm" value={value} onChange={(e) => onChange(e.target.value)}>{options.map((v) => <option key={v}>{v}</option>)}</select></label>; }
-function NumberField({ label, value, onChange }: { label: string; value: number; onChange: (value: number) => void }) { return <label className="flex flex-col gap-2 text-xs font-medium">{label} (years)<Input type="number" min="0" value={value} onChange={(e) => onChange(Number(e.target.value) || 0)} /></label>; }
+function Select({ label, value, options, onChange }: { label: string; value: string; options: string[]; onChange: (value: string) => void }) { return <label className="flex flex-col gap-2 text-sm font-medium">{label}<select className="h-10 rounded-md border border-border bg-card px-4 text-sm" value={value} onChange={(e) => onChange(e.target.value)}>{["Business criticality", "Environment", "Data sensitivity", "Regulatory relevance", "Migration complexity", "Internet exposure"].includes(label) && <option value="unclassified">Unknown / Not provided</option>}{options.map((v) => <option key={v}>{v}</option>)}</select></label>; }
+function NumberField({ label, value, onChange, placeholder }: { label: string; value: number | null; onChange: (value: number | null) => void; placeholder?: string }) { return <label className="flex flex-col gap-2 text-xs font-medium">{label} (years)<Input type="number" min="0" value={value ?? ""} placeholder={placeholder} onChange={(e) => { const val = e.target.value; if (val === "") { onChange(null); } else { const num = Number(val); onChange(isNaN(num) ? null : num); } }} /></label>; }

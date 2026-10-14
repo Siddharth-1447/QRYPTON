@@ -213,10 +213,14 @@ class SourceNormalizer:
             # A mode only identifies its cipher when the same observation
             # supplies an explicit binding (or a composite name such as AES-CBC).
             bound_name = attributes.get("algorithm_name")
-            rule = component.rule if component is not None else algorithm_for_name(
-                bound_name
-                if subject_kind == "mode" and isinstance(bound_name, str)
-                else subject_value
+            rule = (
+                component.rule
+                if component is not None
+                else algorithm_for_name(
+                    bound_name
+                    if subject_kind == "mode" and isinstance(bound_name, str)
+                    else subject_value
+                )
             )
             parameters: dict[str, JsonScalar] = {}
             if component is not None:
@@ -226,7 +230,8 @@ class SourceNormalizer:
                     parameters["hash_algorithm"] = component.hash_name
                 curve = attributes.get("curve")
                 if (
-                    component.rule.family == "signature" and isinstance(curve, str)
+                    component.rule.family == "signature"
+                    and isinstance(curve, str)
                     and re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", curve)
                 ):
                     parameters["curve"] = curve
@@ -312,9 +317,15 @@ class SourceNormalizer:
                 )
             )
             library_value = LibraryMetadata(
-                ecosystem=_observed("source", evidence.id),
+                ecosystem=_observed(
+                    str(attributes.get("library_ecosystem") or "source"), evidence.id
+                ),
                 name=_observed(lib_name, evidence.id),
-                version=_unknown(),
+                version=(
+                    _observed(str(attributes["library_version"]), evidence.id)
+                    if attributes.get("library_version")
+                    else _unknown()
+                ),
                 package_url=_unknown(),
                 known_maintenance_state=_unknown(),
             )

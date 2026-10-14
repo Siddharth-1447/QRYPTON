@@ -96,7 +96,11 @@ def test_source_scanner_reads_real_tree(tmp_path: Path) -> None:
     root = crypto_source_tree(tmp_path / "proj")
     scanner = LocalSourceScanner(SourceScanPolicy(allowed_root=tmp_path))
     assert scanner.name == "qrypton-source"
-    assert ScanTargetKind.SOURCE_TREE in {m.value if hasattr(m, "value") else m for m in scanner.supported_targets} or "source_tree" in scanner.supported_targets
+    assert (
+        ScanTargetKind.SOURCE_TREE
+        in {m.value if hasattr(m, "value") else m for m in scanner.supported_targets}
+        or "source_tree" in scanner.supported_targets
+    )
     observations = _collect(scanner, _request(root, ScanTargetKind.SOURCE_TREE))
     assert observations, "source scanner found nothing in crypto fixture"
     assert not scanner.partial
@@ -146,7 +150,11 @@ def test_kms_scanner_accepts_metadata_document(tmp_path: Path) -> None:
     assert scanner.name == "qrypton-kms"
     assert ScanTargetKind.FILE in scanner.supported_targets
     observations = _collect(scanner, _request(descriptor, ScanTargetKind.FILE))
-    assert observations == []
+    # KMS descriptors carry no algorithm tokens, so the scanner records one
+    # honest library-type reference instead of staying silent.
+    assert len(observations) == 1
+    assert observations[0].attributes.get("subject_kind") == "library"
+    assert observations[0].attributes.get("subject_value") == "aws-kms-key"
     assert not scanner.partial
 
 

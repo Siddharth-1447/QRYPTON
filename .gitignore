@@ -10,8 +10,45 @@ env/
 *.exe
 .DS_Store
 qrypton.db*
+qrypton_demo.db*
 
 qrypton.db
 qrypton.sqlite3
+qrypton-accounts.sqlite3*
 artifacts/
+
+# Local runtime state, credentials, and generated outputs
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.log
+demo_cbom*.json
+demo_ci_report.json
+
+# Tool caches and build products
+.mypy_cache/
+.hypothesis/
+dist/
+build/
+*.egg-info/
+.coverage
+.coverage.*
+htmlcov/
+node_modules/
+.next/
+*.tsbuildinfo
+
+# Local audit snapshots and experiments; maintained reports live in docs/
+/qa_audit/
+/scratch/
+/tmp/
+/backend-diagnostic-audit-2026-10-06.md
 

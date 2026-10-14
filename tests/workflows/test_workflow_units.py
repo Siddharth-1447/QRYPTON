@@ -27,7 +27,12 @@ WORKFLOWS: dict[str, tuple[ScanTargetKind, str, AssetKind, bool]] = {
     "source_archive": (ScanTargetKind.GIT_ARCHIVE, "qrypton-source", AssetKind.REPOSITORY, False),
     "binary": (ScanTargetKind.FILE, "qrypton-binary", AssetKind.BINARY, False),
     "dependency_manifest": (ScanTargetKind.FILE, "qrypton-library", AssetKind.OTHER, False),
-    "container_image": (ScanTargetKind.OCI_IMAGE, "qrypton-container", AssetKind.CONTAINER_IMAGE, False),
+    "container_image": (
+        ScanTargetKind.OCI_IMAGE,
+        "qrypton-container",
+        AssetKind.CONTAINER_IMAGE,
+        False,
+    ),
     "cloud_kms": (ScanTargetKind.FILE, "qrypton-kms", AssetKind.OTHER, False),
 }
 
@@ -81,7 +86,9 @@ def _base_kwargs(**overrides):  # type: ignore[no-untyped-def]
     return kwargs
 
 
-@pytest.mark.parametrize("target_type", ["binary", "dependency_manifest", "container_image", "cloud_kms"])
+@pytest.mark.parametrize(
+    "target_type", ["binary", "dependency_manifest", "container_image", "cloud_kms"]
+)
 def test_non_repository_workflows_require_no_repository_url(target_type: str) -> None:
     """Failure condition: the backend schema must not demand a repo URL here."""
     request = ScanRequest(**_base_kwargs(target_type=target_type))

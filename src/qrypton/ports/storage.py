@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, TypeAlias
 
 from qrypton.contracts.primitives import EntityId, TenantId
 
 if TYPE_CHECKING:
     from qrypton.application.schemas import RunRequest, RunResult, ScannerExecutionResult
+
+    # Read adapters consume the persisted data contract through this port.
+    PersistedRun: TypeAlias = RunResult
 
 
 class RunStore(Protocol):

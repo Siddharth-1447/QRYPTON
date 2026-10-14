@@ -34,7 +34,9 @@ def _observation(
             line_start=token.start[0],
             line_end=token.end[0],
             byte_start=token.start[1],
-            byte_end=token.end[1],
+            byte_end=token.end[1]
+            if token.start[0] == token.end[0] and token.end[1] >= token.start[1]
+            else None,
         ),
         payload_digest=source.digest,
         excerpt=None,

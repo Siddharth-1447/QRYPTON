@@ -14,9 +14,7 @@ from qrypton.risk.schemas import (
 )
 
 UrgencyTier = Literal["critical", "high", "medium", "low"]
-RiskLevel = Literal["critical", "high", "medium", "low"]
-_WEIGHTS = (0.30, 0.25, 0.20, 0.15, 0.10)
-_LEVELS: tuple[RiskLevel, ...] = ("low", "medium", "high", "critical")
+RiskLevel = Literal["critical", "high", "medium", "low", "unknown"]
 
 
 def _urgency_tier(ratio: float) -> UrgencyTier:
@@ -30,25 +28,6 @@ def _urgency_tier(ratio: float) -> UrgencyTier:
     return "low"
 
 
-def _business_band(score: float) -> int:
-    if score <= 2.0:
-        return 0
-    if score <= 3.5:
-        return 1
-    return 2
-
-
-def _matrix(tier: UrgencyTier, business_score: float) -> RiskLevel:
-    """v1.0.0 matrix; low impact caps immediate Mosca urgency at High."""
-    rows: dict[UrgencyTier, tuple[RiskLevel, RiskLevel, RiskLevel]] = {
-        "low": ("low", "low", "medium"),
-        "medium": ("low", "medium", "high"),
-        "high": ("medium", "high", "critical"),
-        "critical": ("high", "high", "critical"),
-    }
-    return rows[tier][_business_band(business_score)]
-
-
 def _business_score(business: BusinessContext) -> float:
     values = (
         business.data_sensitivity,
@@ -57,7 +36,7 @@ def _business_score(business: BusinessContext) -> float:
         business.regulatory_importance,
         business.migration_complexity,
     )
-    return round(sum(weight * value for weight, value in zip(_WEIGHTS, values, strict=True)), 4)
+    return round(sum(values) / len(values), 4)
 
 
 def evaluate_qrypton_risk(
@@ -86,7 +65,9 @@ def evaluate_qrypton_risk(
             (required + delta) / mosca.z_crqc_horizon_years
         )
     tier = _urgency_tier(ratio)
-    risk_level = _matrix(tier, business_score)
+    # This compatibility API has no canonical finding or algorithm evidence.
+    # It can report temporal Mosca urgency and context, but cannot infer priority.
+    risk_level: RiskLevel = "unknown"
     x_value = (
         "permanent" if mosca.x_data_lifetime_years is None else f"{mosca.x_data_lifetime_years:g}"
     )
@@ -101,8 +82,9 @@ def evaluate_qrypton_risk(
         f"exposure overlap E: **{overlap_value} years**.\n"
         f"- Uncertainty overlap range: **{overlap_min:g}–{overlap_max:g} years**; "
         f"status flip: **{'yes' if flip else 'no'}**.\n"
-        f"- Business impact B: **{business_score:.4f}/5**; urgency tier: "
-        f"**{tier}**; matrix {matrix_version.value} result: **{risk_level}**."
+        f"- Business impact B: **{business_score:.4f}/5**; Mosca urgency: "
+        f"**{tier}**; final priority: **unknown** because "
+        "canonical cryptographic evidence was not supplied."
     )
     return RiskAssessmentResult(
         matrix_version=matrix_version,

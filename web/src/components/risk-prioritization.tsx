@@ -1,54 +1,84 @@
 "use client";
+import { GlossaryText } from "@/components/glossary";
 
-import type { CSSProperties } from "react";
-import { ArrowUpRight, CheckCircle2, Filter, Info, ShieldAlert } from "lucide-react";
-import { Badge, Button, Card, CardContent, CardHeader, CardTitle } from "@/components/ui/primitives";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { RiskBadge, Button, Card, CardContent, CardHeader, CardTitle } from "@/components/ui/primitives";
+import { CRITICALITIES, URGENCIES, nextCell, riskView, type HeatmapCell, type CellSelection } from "@/lib/risk-view";
+import { MIGRATION_STATUSES, type CryptoInventoryRow, type InventoryViewState } from "@/lib/inventory-view";
 
-type HeatmapCell = { mosca_urgency: string; business_criticality: string; finding_count: number; finding_ids: string[] };
-type Finding = { finding_id: string; category: string; algorithm_name: string | null; risk_level: string; risk_score: number | null };
-type Props = { heatmap: HeatmapCell[]; inventory: Finding[]; selected: { urgency: string; criticality: string; finding_ids?: string[] } | null; onFilter: (cell: { urgency: string; criticality: string; finding_ids?: string[] } | null) => void; onSelect: (id: string) => void };
+type RoadmapItem = { finding_id: string; priority: number; action: string; target_algorithms: string[] };
+type Props = { heatmap: HeatmapCell[]; inventory: CryptoInventoryRow[]; roadmap: RoadmapItem[]; selected: CellSelection | null; onFilter: (cell: CellSelection | null) => void; onSelect: (id: string) => void; state: InventoryViewState; onViewChange: (patch: Partial<InventoryViewState>) => void; sampleData?: boolean };
+const label = (value: string) => value.replaceAll("_", " ");
+const riskLevels = ["critical", "high", "medium", "low", "informational", "unknown", "unassessed"];
 
-const urgency = ["critical", "high", "medium", "low"];
-const criticality = ["low", "medium", "high", "critical"];
-const tones: Record<string, "critical" | "high" | "medium" | "low"> = { critical: "critical", high: "high", medium: "medium", low: "low" };
-
-function matrixCellStyle(urgencyLevel: string, criticalityLevel: string, count: number): CSSProperties {
-  const density = Math.min(1, 0.45 + count * 0.12);
-  if (urgencyLevel === "critical" && criticalityLevel === "critical") return { background: `rgba(255, 51, 102, ${0.18 * density})`, borderColor: "#FF3366", color: "#FF3366", boxShadow: count ? "0 0 22px rgba(255, 51, 102, .28)" : undefined };
-  if ((urgencyLevel === "critical" && criticalityLevel === "high") || (urgencyLevel === "high" && criticalityLevel === "high")) return { background: `rgba(255, 153, 0, ${0.15 * density})`, borderColor: "#FF9900", color: "#FF9900", boxShadow: count ? "0 0 16px rgba(255, 153, 0, .18)" : undefined };
-  if (urgencyLevel === "medium" || criticalityLevel === "medium") return { background: `rgba(255, 204, 0, ${0.12 * density})`, borderColor: "#FFCC00", color: "#FFCC00" };
-  if (urgencyLevel === "low" && criticalityLevel === "low") return { background: "rgba(0, 255, 135, 0.05)", borderColor: "rgba(0, 255, 135, 0.2)", color: "#00FF87" };
-  return count ? { background: `rgba(255, 153, 0, ${0.08 * density})`, borderColor: "rgba(255, 153, 0, .45)", color: "#FFCC00" } : { background: "rgba(255,255,255,.02)", borderColor: "rgba(255,255,255,.10)", color: "#8d97a7" };
-}
-
-export function RiskPrioritization({ heatmap, inventory, selected, onFilter, onSelect }: Props) {
-  const queue = [...inventory].sort((a, b) => (b.risk_score ?? 0) - (a.risk_score ?? 0)).slice(0, 6);
-  const count = (level: string) => inventory.filter((item) => item.risk_level.toLowerCase() === level).length;
-
-  return (
-    <section id="risk" className="flex flex-col gap-4" aria-labelledby="risk-heading">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-        <div><h2 id="risk-heading" className="text-xl font-semibold tracking-tight">Risk &amp; prioritization</h2><p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">Focus remediation where business consequence, quantum urgency, and cryptographic weakness overlap.</p></div>
-        {selected && <Button variant="secondary" onClick={() => onFilter(null)}><Filter data-icon="inline-start" /> Clear matrix filter</Button>}
-      </div>
-      <div className="grid gap-4 lg:grid-cols-[1.15fr_0.85fr]">
-        <Card>
-          <CardHeader><div className="flex items-start justify-between gap-3"><div><CardTitle>Priority matrix</CardTitle><p className="mt-1 text-sm text-muted-foreground">Select a cell to narrow the findings queue.</p></div><span className="text-xs text-muted-foreground">Urgency × criticality</span></div></CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-[auto_repeat(4,minmax(0,1fr))] gap-2 text-center text-xs">
-              <span className="flex items-end justify-end pb-2 pr-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Urgency / impact</span>
-              {criticality.map((level) => <span key={level} className="pb-2 font-semibold capitalize text-muted-foreground">{level}</span>)}
-              {urgency.map((u) => <div key={u} className="contents"><span className="flex items-center justify-end pr-2 font-semibold capitalize text-muted-foreground">{u}</span>{criticality.map((c) => { const cell = heatmap.find((item) => item.mosca_urgency?.toLowerCase() === u && item.business_criticality?.toLowerCase() === c); const amount = cell?.finding_count ?? 0; const active = selected?.urgency === u && selected?.criticality === c; return <button key={`${u}-${c}`} type="button" aria-label={`${amount} ${u} urgency, ${c} criticality findings`} onClick={() => onFilter(active ? null : { urgency: u, criticality: c, finding_ids: cell?.finding_ids })} style={matrixCellStyle(u, c, amount)} className={`flex min-h-16 flex-col items-center justify-center rounded-md border text-sm font-semibold transition-all hover:brightness-125 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${active ? "ring-2 ring-primary ring-offset-2 ring-offset-background" : ""}`}><span className="font-mono text-lg">{amount}</span><span className="text-[10px] font-normal opacity-75">findings</span></button>; })}</div>)}
-            </div>
-            <div className="mt-4 flex items-start gap-2 rounded-md border border-border bg-muted/30 p-3 text-xs leading-5 text-muted-foreground"><Info className="mt-0.5 size-4 shrink-0 text-primary" /><span>Cells combine the Mosca planning heuristic with business criticality. A dense upper-right cell means fix those findings first; it does not predict a CRQC date.</span></div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader><div className="flex items-start justify-between gap-3"><div><CardTitle>Recommended priority queue</CardTitle><p className="mt-1 text-sm text-muted-foreground">Highest-scoring findings first, with context.</p></div><ShieldAlert className="size-5 text-primary" /></div></CardHeader>
-          <CardContent><div className="flex flex-col gap-2">{queue.length ? queue.map((item, index) => <button type="button" key={`${item.finding_id || 'item'}-${index}`} onClick={() => onSelect(item.finding_id)} className="group flex items-center gap-3 rounded-md border border-border p-3 text-left transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted font-mono text-xs font-semibold text-muted-foreground">{index + 1}</span><span className="min-w-0 flex-1"><span className="flex items-center gap-2"><span className="truncate text-sm font-semibold">{item.algorithm_name ?? "Unidentified algorithm"}</span><Badge tone={tones[item.risk_level] ?? "low"}>{item.risk_level}</Badge></span><span className="mt-1 block truncate text-xs text-muted-foreground">{item.category.replaceAll("_", " ")} · {item.finding_id}</span></span><span className="flex items-center gap-1 font-mono text-sm font-semibold">{item.risk_score ?? "—"}<ArrowUpRight className="size-3 text-muted-foreground transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" /></span></button>) : <div className="flex flex-col items-center gap-2 py-8 text-center"><CheckCircle2 className="size-7 text-emerald-600" /><p className="text-sm font-semibold">No findings require prioritization</p><p className="text-xs text-muted-foreground">A completed scan will populate the decision queue.</p></div>}</div></CardContent>
-        </Card>
-      </div>
-      <div className="grid gap-3 sm:grid-cols-4">{urgency.map((level) => <Card key={level} className="p-4"><div className="flex items-center justify-between"><span className="text-xs font-semibold capitalize text-muted-foreground">{level} risk</span><span className={`size-2 rounded-full qrypton-risk-${tones[level]}`} /></div><p className="mt-2 font-mono text-2xl font-semibold">{count(level)}</p><p className="text-xs text-muted-foreground">findings in scope</p></Card>)}</div>
+export function RiskPrioritization({ heatmap, inventory, roadmap, selected, onFilter, onSelect, state, onViewChange, sampleData }: Props) {
+  const buttons = useRef<Array<HTMLButtonElement | null>>([]);
+  const [focusIndex, setFocusIndex] = useState(0);
+  const [hover, setHover] = useState<number | null>(null);
+  const [pagination, setPagination] = useState({ key: "", page: 0 });
+  const [chartView, setChartView] = useState<"matrix" | "graph">("matrix");
+  const view = riskView(heatmap, inventory, state, selected);
+  const graphCells = useMemo(() => chartView === "graph"
+    ? riskView(heatmap, inventory, { ...state, urgency: "", criticality: "" }, null).cells
+    : [], [chartView, heatmap, inventory, state]);
+  const graphRows = URGENCIES.map(urgency => {
+    const cells = graphCells.filter(cell => cell.mosca_urgency === urgency);
+    return { urgency, count: cells.reduce((total, cell) => total + cell.finding_count, 0), cells, highestRisk: Math.max(0, ...cells.map(cell => cell.highestRisk)) };
+  });
+  const graphMax = Math.max(1, ...graphRows.map(row => row.count));
+  const queue = view.findings.slice(0, 6);
+  const activeKey = JSON.stringify([state, selected, inventory.map(row => row.finding_id)]);
+  const pageCount = Math.max(1, Math.ceil(view.findings.length / 5));
+  const page = pagination.key === activeKey ? Math.min(pagination.page, pageCount - 1) : 0;
+  const setPage = (page: number) => setPagination({ key: activeKey, page });
+  useEffect(() => {
+    if (!selected) return;
+    const clear = (event: KeyboardEvent) => { if (event.key === "Escape" && !document.querySelector('[aria-modal="true"]')) { event.preventDefault(); onFilter(null); } };
+    document.addEventListener("keydown", clear);
+    return () => document.removeEventListener("keydown", clear);
+  }, [selected, onFilter]);
+  const selector = (key: "application" | "criticality" | "exposure" | "algorithm" | "risk" | "migration", title: string, values: string[]) => <label key={key} className="flex min-w-0 flex-col gap-1 text-xs font-semibold text-muted-foreground">{title}<select aria-label={title} value={state[key]} onChange={e => { onViewChange({ [key]: e.target.value, ...(key === "criticality" ? { urgency: "" } : {}), finding: "" }); }} className="h-10 w-full rounded-md border border-input bg-card px-2 text-sm text-foreground"><option value="">All</option>{[...new Set([...values, ...(state[key] ? [state[key]] : [])])].map(v => <option key={v} value={v}>{label(v)}</option>)}</select></label>;
+  const applications = [...new Set(inventory.map(row => row.application ?? "Unknown"))].sort();
+  const algorithms = [...new Set(inventory.map(row => row.algorithm_name ?? "Unknown"))].sort();
+  const filterFinding = (id: string) => { onViewChange({ finding: id }); };
+  const actions = new Map<string, string>();
+  for (const item of roadmap) if (!actions.has(item.finding_id)) actions.set(item.finding_id, item.action);
+  return <section id="risk" className="flex flex-col gap-4" aria-labelledby="risk-heading">
+    <div className="flex flex-wrap items-end justify-between gap-3"><div><h2 id="risk-heading" className="text-xl font-semibold">What Should You Fix First?</h2><p className="mt-1 text-sm text-muted-foreground">Business criticality × quantum planning urgency. Color shows the highest recorded risk in each cell.</p></div>{sampleData && <span className="text-xs text-muted-foreground">Sample data</span>}</div>
+    <div className="grid gap-3 rounded-lg border border-border bg-card p-4 sm:grid-cols-3 lg:grid-cols-6" role="group" aria-label="Risk investigation filters">
+      {selector("application", "Application", applications)}{selector("criticality", "Criticality", [...CRITICALITIES])}{selector("exposure", "Exposure", ["yes", "no", "unknown"])}{selector("algorithm", "Algorithm", algorithms)}{selector("risk", "Risk", riskLevels)}{selector("migration", "Migration state", MIGRATION_STATUSES)}
+    </div>
+    <div className="flex flex-wrap items-center justify-between gap-3 text-sm"><p aria-live="polite">{view.findings.length} matching findings · {view.total} findings across cells{selected && ` · ${label(selected.urgency)} urgency${selected.criticality ? ` / ${selected.criticality} criticality` : ""}`}</p><div className="flex gap-2">{selected && <Button variant="secondary" onClick={() => { onFilter(null); }}>Clear selection · Esc</Button>}{state.finding && <Button variant="secondary" onClick={() => onViewChange({ finding: "" })}>Show all matches</Button>}</div></div>
+    {!view.valid && <p role="alert" className="rounded-lg border border-danger p-4 text-sm">The matrix does not reconcile with the finding list. Reload the scan before making a prioritization decision.</p>}
+    <div className="grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
+      <Card className="min-w-0"><CardHeader><div className="flex flex-wrap items-start justify-between gap-3"><div><CardTitle>Quantum Urgency × Business Criticality</CardTitle><p className="text-xs text-muted-foreground">{chartView === "matrix" ? "Arrow keys move between cells; Enter or Space selects. Counts include the active filters." : "Bar length shows findings per urgency. Each row lists its business criticality breakdown. Select a row to filter findings."}</p></div><div role="group" aria-label="Risk chart view" className="flex rounded-md border border-border p-1 text-xs"><button type="button" aria-pressed={chartView === "matrix"} onClick={() => setChartView("matrix")} className={`rounded px-3 py-1.5 ${chartView === "matrix" ? "bg-muted font-semibold" : "text-muted-foreground"}`}>Matrix</button><button type="button" aria-pressed={chartView === "graph"} onClick={() => setChartView("graph")} className={`rounded px-3 py-1.5 ${chartView === "graph" ? "bg-muted font-semibold" : "text-muted-foreground"}`}>Bar Graph</button></div></div></CardHeader><CardContent>
+        {chartView === "matrix" ? <div className="risk-matrix-scroll overflow-x-auto pb-2">
+          <div role="grid" aria-label="Quantum urgency by business criticality" aria-rowcount={7} aria-colcount={6} className="grid min-w-[480px] grid-cols-[100px_repeat(5,minmax(0,1fr))] gap-2 text-center text-xs">
+            <div role="row" className="contents"><span role="columnheader" className="sticky left-0 z-10 bg-card text-muted-foreground">Urgency ↓<br />Criticality →</span>{CRITICALITIES.map(c => <span role="columnheader" key={c} className="break-words pb-2 font-semibold capitalize text-muted-foreground">{c}</span>)}</div>
+            {URGENCIES.map((urgency, rowIndex) => <div role="row" key={urgency} className="contents"><span role="rowheader" className="sticky left-0 z-10 flex items-center justify-end bg-card pr-2 font-semibold capitalize text-muted-foreground">{label(urgency)}</span>{CRITICALITIES.map((criticality, columnIndex) => {
+              const index = rowIndex * 5 + columnIndex;
+              const cell = view.cells.find(c => c.mosca_urgency === urgency && c.business_criticality === criticality);
+              const amount = cell?.finding_count ?? 0;
+              const active = selected?.urgency === urgency && selected?.criticality === criticality;
+              const intensity = amount ? Math.max(0, (cell?.highestRisk ?? 0) - 1) : 0;
+              const highestRisk = Object.entries({ critical: 5, high: 4, medium: 3, low: 2, informational: 1 }).find(([, rank]) => rank === cell?.highestRisk)?.[0] ?? "unknown or unassessed";
+              const text = `${amount} findings; highest recorded risk: ${amount ? highestRisk : "none"}; top application: ${cell?.topApplication ?? "None"}; ${label(urgency)} quantum urgency; ${criticality} business criticality`;
+              return <div role="gridcell" key={criticality} className="relative" aria-selected={active}><button ref={el => { buttons.current[index] = el; }} tabIndex={index === focusIndex ? 0 : -1} type="button" aria-label={text} aria-describedby={hover === index ? "risk-cell-tooltip" : undefined} aria-pressed={active} onFocus={() => { setFocusIndex(index); setHover(index); }} onBlur={() => setHover(null)} onMouseEnter={() => setHover(index)} onMouseLeave={() => setHover(null)} onKeyDown={e => { const next = nextCell(index, e.key); if (["ArrowRight", "ArrowLeft", "ArrowUp", "ArrowDown", "Home", "End"].includes(e.key)) { e.preventDefault(); setFocusIndex(next); buttons.current[next]?.focus(); } }} onClick={() => { onFilter(active ? null : { urgency, criticality, finding_ids: cell?.finding_ids ?? [] }); }} style={{ background: `var(--heatmap-${intensity})`, color: intensity === 4 ? "var(--heatmap-text-inverse)" : "var(--heatmap-text)" } as CSSProperties} className={`risk-cell flex min-h-16 w-full flex-col items-center justify-center rounded-md border border-border text-sm font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary ${active ? "ring-2 ring-primary ring-offset-2 ring-offset-background" : ""}`}><span className="text-lg tabular-nums">{amount}</span><span className="text-xs font-normal">{amount ? highestRisk.split(" ")[0] : "findings"}</span></button>{hover === index && <span id="risk-cell-tooltip" role="tooltip" className={`pointer-events-none absolute z-20 w-48 rounded-md border border-border bg-card p-2 text-left text-xs text-foreground shadow-sm ${columnIndex >= 3 ? "right-0" : "left-0"} ${rowIndex >= 4 ? "bottom-full mb-2" : "top-full mt-2"}`}>{amount} findings<br />Highest risk: {amount ? highestRisk : "none"}<br />Top application: {cell?.topApplication ?? "None"}</span>}</div>;
+            })}</div>)}
+          </div>
+        </div> : <div aria-label="Findings by quantum urgency" className="space-y-3">{graphRows.map(row => <button key={row.urgency} data-urgency={row.urgency} type="button" aria-pressed={selected?.urgency === row.urgency && !selected.criticality} onClick={() => { onFilter(selected?.urgency === row.urgency && !selected.criticality ? null : { urgency: row.urgency, criticality: "", finding_ids: row.cells.flatMap(cell => cell.finding_ids) }); }} className="block w-full rounded-md border border-border p-3 text-left hover:bg-muted/20 focus-visible:outline-2 focus-visible:outline-primary"><span className="flex items-baseline justify-between gap-3 text-sm"><span className="font-semibold capitalize">{label(row.urgency)}</span><span className="tabular-nums">{row.count} {row.count === 1 ? "finding" : "findings"}</span></span><span className="mt-2 block h-3 overflow-hidden rounded-full bg-muted"><span className="block h-full rounded-full" style={{ width: `${row.count / graphMax * 100}%`, background: `var(--heatmap-${row.count ? Math.max(1, row.highestRisk - 1) : 0})` }} /></span><span className="mt-2 block text-xs text-muted-foreground">{CRITICALITIES.map(level => `${label(level)} ${row.cells.find(cell => cell.business_criticality === level)?.finding_count ?? 0}`).join(" · ")}</span></button>)}</div>}
+        <p className="mt-3 text-xs text-muted-foreground">Every finding belongs to one cell. Unknown urgency and unclassified criticality remain visible. Planning heuristic, not a prediction of quantum computer arrival.</p>
+      </CardContent></Card>
+      <Card id="roadmap" className="min-w-0"><CardHeader><CardTitle>Priority Queue</CardTitle><p className="text-xs text-muted-foreground">Sensitive data with a lifetime of at least 5 years and internet exposure comes first. Backend remediation policy 1.0.0.</p></CardHeader><CardContent className="flex flex-col gap-2">
+        {queue.map(row => <button data-list-item key={row.finding_id} onKeyDown={event => { if (event.key === "e") { event.preventDefault(); event.stopPropagation(); sessionStorage.setItem("qrypton.focus-status", "1"); onSelect(row.finding_id); } }} onClick={() => filterFinding(row.finding_id)} className="flex items-start gap-3 rounded-lg border border-border p-3 text-left qrypton-motion hover:bg-muted/10 focus-visible:outline-2 focus-visible:outline-primary"><span className="font-sans tabular-nums text-sm text-primary">#{row.remediation_rank ?? "?"}</span><span className="min-w-0 flex-1"><span className="flex flex-wrap items-center gap-2"><span className="font-mono text-sm font-semibold"><GlossaryText>{row.identity_label}</GlossaryText></span><RiskBadge level={row.risk_assessment_state === "assessed" ? row.risk_level : "unassessed"} /></span><span className="mt-1 block truncate text-xs text-muted-foreground" title={row.remediation_reason ?? "Unknown prioritization context"}>{row.remediation_reason ?? "Unknown prioritization context — re-evaluate this scan."}</span><span className="mt-2 block text-xs text-muted-foreground">{row.application ?? "Unknown application"} · {label(row.migration_status ?? "untriaged")} · Filter this finding →</span></span></button>)}
+        {!queue.length && <p className="p-4 text-sm text-muted-foreground">No findings match these filters.</p>}
+      </CardContent></Card>
+    </div>
+    <div className="flex flex-wrap gap-2" aria-label="Filter by recorded risk">{riskLevels.map(risk => { const count = inventory.filter(row => risk === "unassessed" ? row.risk_assessment_state === "unassessed" : row.risk_assessment_state === "assessed" && row.risk_level === risk).length; return <button key={risk} aria-pressed={state.risk === risk} onClick={() => { onViewChange({ risk: state.risk === risk ? "" : risk, finding: "" }); }} className="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-xs focus-visible:outline-2 focus-visible:outline-primary"><RiskBadge level={risk} /><span className="tabular-nums">{count}</span></button>; })}</div>
+    <section aria-labelledby="risk-findings-heading" className="rounded-lg border border-border bg-card p-4"><div className="flex flex-wrap items-center justify-between gap-2"><h3 id="risk-findings-heading" className="font-semibold">Filtered Findings</h3><span className="text-xs text-muted-foreground">Backend remediation order · {view.findings.length} matches</span></div>
+      <div className="mt-3 flex flex-col gap-2">{view.findings.slice(page * 5, page * 5 + 5).map(row => <article key={row.finding_id} data-finding-id={row.finding_id} className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-3 rounded-md border border-border p-3 sm:flex"><span className="font-mono text-sm">#{row.remediation_rank ?? "?"}</span><div className="min-w-0 flex-1"><p className="text-sm font-semibold"><GlossaryText>{row.identity_label}</GlossaryText></p><p className="mt-1 text-xs text-muted-foreground">{row.remediation_reason ?? "Unknown context"}</p><p className="mt-1 text-xs text-muted-foreground">{row.application ?? "Unknown application"} · {label(row.migration_status ?? "untriaged")}<GlossaryText>{actions.has(row.finding_id) ? ` · ${actions.get(row.finding_id)}` : " · No migration action recorded"}</GlossaryText></p></div><div className="col-span-2 flex items-center justify-between gap-3 sm:ml-auto sm:shrink-0"><RiskBadge level={row.risk_assessment_state === "assessed" ? row.risk_level : "unassessed"} /><Button data-list-item data-status-target variant="secondary" onClick={() => onSelect(row.finding_id)}>Investigate</Button></div></article>)}</div>
+      {!view.findings.length && <p className="py-6 text-sm text-muted-foreground">No findings in this selection. Clear the cell or adjust the filters.</p>}{view.findings.length > 5 && <nav aria-label="Findings pagination" className="mt-4 flex items-center justify-between gap-3"><Button variant="secondary" disabled={page === 0} onClick={() => setPage(page - 1)}>Previous</Button><span className="text-sm" aria-live="polite">{page * 5 + 1}–{Math.min(view.findings.length, page * 5 + 5)} of {view.findings.length} · Page {page + 1} of {pageCount}</span><Button variant="secondary" disabled={page + 1 >= pageCount} onClick={() => setPage(page + 1)}>Next</Button></nav>}
+      <span className="sr-only" data-filter-state={activeKey}>Filters are saved in the URL.</span>
     </section>
-  );
+  </section>;
 }

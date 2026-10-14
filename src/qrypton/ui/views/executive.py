@@ -33,7 +33,7 @@ def render_executive_view(view: DashboardRunView) -> None:
     row2_col1, row2_col2 = st.columns(2)
     with row2_col1:
         st.markdown("#### Findings by persisted risk level")
-        breakdown_cols = st.columns(6)
+        breakdown_cols = st.columns(7)
         with breakdown_cols[0]:
             st.metric("Critical", posture.critical_findings_count)
         with breakdown_cols[1]:
@@ -45,6 +45,8 @@ def render_executive_view(view: DashboardRunView) -> None:
         with breakdown_cols[4]:
             st.metric("Info", posture.informational_findings_count)
         with breakdown_cols[5]:
+            st.metric("Unknown", posture.unknown_findings_count)
+        with breakdown_cols[6]:
             st.metric("Unassessed", posture.unassessed_findings_count)
     with row2_col2:
         st.markdown("#### Policy gate and execution health")

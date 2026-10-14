@@ -38,7 +38,16 @@ class PolicyGate(DomainModel):
 
 class RunFailure(DomainModel):
     stage: Literal[
-        "scanner", "normalization", "correlation", "risk", "recommendation", "export", "store"
+        "resolve",
+        "configuration",
+        "orchestration",
+        "scanner",
+        "normalization",
+        "correlation",
+        "risk",
+        "recommendation",
+        "export",
+        "store",
     ]
     error_code: Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{2,63}$")]
     scanner_name: Annotated[str | None, Field(min_length=1, max_length=128)] = None
@@ -70,6 +79,7 @@ class RunRequest(DomainModel):
     risk_policy: RiskPolicy
     recommendation_policy: PqcRecommendationPolicy
     business_context: BusinessContext | None = None
+    finding_business_contexts: dict[EntityId, BusinessContext] = Field(default_factory=dict)
     config_digest: Sha256Digest
     policy_gate: PolicyGate = Field(default_factory=PolicyGate)
     reference_time: UtcDateTime
@@ -82,6 +92,13 @@ class RunRequest(DomainModel):
             raise ValueError("target must belong to the request asset")
         if self.business_context and self.business_context.asset_id != self.asset.id:
             raise ValueError("business context must belong to the request asset")
+        if any(
+            context.asset_id != self.asset.id or context.tenant_id != self.tenant_id
+            for context in self.finding_business_contexts.values()
+        ):
+            raise ValueError(
+                "finding business contexts must belong to the request asset and tenant"
+            )
         return self
 
 
@@ -102,6 +119,7 @@ class RunResult(DomainModel):
     asset: Asset | None = None
     target: ScanTarget | None = None
     business_context: BusinessContext | None = None
+    finding_business_contexts: dict[EntityId, BusinessContext] = Field(default_factory=dict)
     scanner_results: tuple[ScannerExecutionResult, ...] = ()
     failures: tuple[RunFailure, ...] = ()
     evidence: tuple[Evidence, ...] = ()

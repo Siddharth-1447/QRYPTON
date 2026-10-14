@@ -7,30 +7,59 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import sys
 import tomllib
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from importlib.metadata import version as package_version
 from pathlib import Path
 
 from qrypton.application.config import (
     QryptonConfig,
-    build_orchestrator,
+    build_services,
     default_recommendation_policy,
     default_risk_policy,
 )
+from qrypton.application.orchestration import QryptonOrchestrator, UnknownScannerError
 from qrypton.application.schemas import PolicyGate, RunRequest
 from qrypton.ci import CI_SCHEMA_VERSION, build_ci_result, dump_ci_result
 from qrypton.ci.exit_codes import ExitCode
 from qrypton.contracts.enums import AssetKind, ObservationState, RiskLevel, ScanTargetKind
 from qrypton.contracts.ids import HmacIdDeriver, canonical_json_bytes
 from qrypton.contracts.models import Asset, Observation, Provenance, ScanTarget
+from qrypton.exporters.cyclonedx_1_6 import CycloneDx16CbomExporter
 from qrypton.ports.scanners import ScanLimits
+from qrypton.scanners.binary.scanner import LocalBinaryScanner
+from qrypton.scanners.extended import (
+    CloudKmsScanner,
+    ContainerImageScanner,
+    ExtendedStaticScanner,
+    LibraryDependencyScanner,
+)
+from qrypton.scanners.source.scanner import LocalSourceScanner
 from qrypton.storage.sqlite import SqliteRunStore
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="qrypton")
+    parser = argparse.ArgumentParser(prog="qrypton", formatter_class=argparse.RawTextHelpFormatter)
+    components = (
+        ("source scanner", LocalSourceScanner),
+        ("binary scanner", LocalBinaryScanner),
+        ("extended static adapter", ExtendedStaticScanner),
+        ("library dependency adapter", LibraryDependencyScanner),
+        ("container image adapter", ContainerImageScanner),
+        ("cloud KMS adapter", CloudKmsScanner),
+        ("CBOM exporter", CycloneDx16CbomExporter),
+    )
+    version_text = "\n".join(
+        (f"qrypton {package_version('qrypton')}",)
+        + tuple(
+            f"{label} ({component.name}) {component.version}"
+            for label, component in components
+        )
+    )
+    parser.add_argument("--version", action="version", version=version_text)
     commands = parser.add_subparsers(dest="command", required=True)
     scan = commands.add_parser("scan")
     scan.add_argument("target")
@@ -124,6 +153,95 @@ def _setting(
     return config.get(name, default)
 
 
+def _target_content_hash(path: Path) -> str:
+    """Hash path names, file bytes, and symlink identities without following links."""
+    digest = hashlib.sha256()
+
+    def record(entry: Path) -> None:
+        name = "." if entry == path else entry.relative_to(path).as_posix()
+        digest.update(name.encode("utf-8", errors="surrogateescape") + b"\0")
+        if entry.is_symlink():
+            digest.update(b"L\0" + os.readlink(entry).encode("utf-8", errors="surrogateescape"))
+        elif entry.is_file():
+            digest.update(b"F\0")
+            with entry.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        elif entry.is_dir():
+            digest.update(b"D\0")
+        else:
+            raise ValueError("unsupported target entry")
+        digest.update(b"\0")
+
+    record(path)
+    if path.is_dir():
+        for current, directories, files in os.walk(path, followlinks=False):
+            base = Path(current)
+            for name in sorted((*directories, *files)):
+                record(base / name)
+            directories[:] = sorted(
+                name for name in directories if not (base / name).is_symlink()
+            )
+    return f"sha256:{digest.hexdigest()}"
+
+
+def _scan_input_hash(path: Path, request: RunRequest) -> str:
+    payload = canonical_json_bytes(
+        {"target_content": _target_content_hash(path), "request": request}
+    )
+    return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+
+
+def _validated_baseline(document: object) -> dict[str, object]:
+    if not isinstance(document, dict) or document.get("schema_version") != CI_SCHEMA_VERSION:
+        raise ValueError("baseline schema_version must be 1.0")
+    inventory = document.get("inventory")
+    if not isinstance(inventory, dict):
+        raise ValueError("baseline inventory must be an object")
+    categories = {"algorithm_use", "key_material", "certificate", "protocol", "library"}
+    for fingerprint, entry in inventory.items():
+        if (
+            not isinstance(fingerprint, str)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", fingerprint) is None
+        ):
+            raise ValueError("baseline inventory contains an invalid fingerprint")
+        if not isinstance(entry, dict):
+            raise ValueError("baseline inventory entries must be objects")
+        risk_level = entry.get("risk_level")
+        category = entry.get("category")
+        if not isinstance(risk_level, str) or risk_level not in {
+            level.value for level in RiskLevel
+        }:
+            raise ValueError("baseline inventory entry has an invalid risk_level")
+        if not isinstance(category, str) or category not in categories:
+            raise ValueError("baseline inventory entry has an invalid category")
+    return document
+
+
+def _ci_failure(
+    args: argparse.Namespace,
+    exit_code: ExitCode,
+    error_code: str,
+    reason: str,
+    **details: object,
+) -> int:
+    document: dict[str, object] = {
+        "schema_version": CI_SCHEMA_VERSION,
+        "exit_code": int(exit_code),
+        "exit_reason": exit_code.name.casefold(),
+        "error_code": error_code,
+        "reason": reason,
+        **details,
+    }
+    print(f"{error_code}: {reason}", file=sys.stderr)
+    try:
+        Path(args.ci_output).write_bytes(dump_ci_result(document))
+    except OSError:
+        print("artifact_error: cannot write CI failure artifact", file=sys.stderr)
+        return ExitCode.ARTIFACT_ERROR
+    return exit_code
+
+
 def _scan(args: argparse.Namespace) -> int:
     secret = os.environ.get(args.id_secret_env)
     if secret is None or len(secret.encode()) < 32:
@@ -208,9 +326,70 @@ def _scan(args: argparse.Namespace) -> int:
         ),
         reference_time=now,
     )
-    result = asyncio.run(build_orchestrator(config).run(request))
-    if args.output and result.cbom is not None:
-        Path(args.output).write_bytes(result.cbom)
+    services = build_services(config)
+    store = services.store
+    if not isinstance(store, SqliteRunStore):
+        raise RuntimeError("CLI requires SQLite run storage")
+    orchestrator = QryptonOrchestrator(services, max_concurrency=config.max_concurrency)
+    try:
+        valid = tuple(sorted({scanner.name for scanner in services.scanners}))
+        unknown = tuple(sorted(set(request.selected_scanners) - set(valid)))
+        if unknown:
+            error = UnknownScannerError(unknown, valid)
+            args._scan_error = {
+                "error_code": "unknown_scanner",
+                "reason": str(error),
+                "unavailable_scanners": list(unknown),
+                "valid_scanners": list(valid),
+            }
+            print(f"scanner_configuration_error: {error}", file=sys.stderr)
+            return ExitCode.INVOCATION_ERROR
+        run_id = orchestrator.run_id_for(request)
+        args._run_id = run_id
+        content_hash = _scan_input_hash(target_path, request)
+        existing = store.get_run(tenant_id=args.tenant_id, run_id=run_id)
+        if existing is not None:
+            if store.get_content_hash(tenant_id=args.tenant_id, run_id=run_id) != content_hash:
+                print(
+                    f"run_conflict: immutable result {run_id} has different target content",
+                    file=sys.stderr,
+                )
+                return ExitCode.RUN_CONFLICT
+            if existing.cbom is not None and existing.cbom_digest != (
+                f"sha256:{hashlib.sha256(existing.cbom).hexdigest()}"
+            ):
+                print(
+                    f"run_conflict: immutable result {run_id} has an invalid CBOM digest",
+                    file=sys.stderr,
+                )
+                return ExitCode.RUN_CONFLICT
+            if args.output:
+                if existing.cbom is None:
+                    print("artifact_error: stored result has no CBOM", file=sys.stderr)
+                    return ExitCode.ARTIFACT_ERROR
+                try:
+                    Path(args.output).write_bytes(existing.cbom)
+                except OSError:
+                    print("artifact_error: cannot write CBOM output", file=sys.stderr)
+                    return ExitCode.ARTIFACT_ERROR
+            print(f"reused existing immutable result {run_id}")
+            return ExitCode.SUCCESS
+        result = asyncio.run(orchestrator.run(request))
+        if _scan_input_hash(target_path, request) != content_hash:
+            print("run_conflict: target content changed during scan", file=sys.stderr)
+            return ExitCode.RUN_CONFLICT
+        store.bind_content_hash(tenant_id=args.tenant_id, run_id=run_id, digest=content_hash)
+    finally:
+        store.close()
+    if args.output:
+        if result.cbom is None:
+            print("artifact_error: scan produced no CBOM", file=sys.stderr)
+            return ExitCode.ARTIFACT_ERROR
+        try:
+            Path(args.output).write_bytes(result.cbom)
+        except OSError:
+            print("artifact_error: cannot write CBOM output", file=sys.stderr)
+            return ExitCode.ARTIFACT_ERROR
     if not args.quiet:
         payload = {
             "run_id": result.run_id,
@@ -232,22 +411,35 @@ def _ci_scan(args: argparse.Namespace) -> int:
     """Run a scan, then gate only introduced/worsened findings against a trusted baseline."""
     try:
         baseline_path = Path(args.baseline).resolve(strict=True)
-        baseline = json.loads(baseline_path.read_bytes())
-    except (OSError, json.JSONDecodeError):
-        return ExitCode.BASELINE_ERROR
-    if not isinstance(baseline, dict) or baseline.get("schema_version") != CI_SCHEMA_VERSION:
-        return ExitCode.BASELINE_ERROR
+        if baseline_path.stat().st_size > 8 * 1024 * 1024:
+            raise ValueError("baseline exceeds 8 MiB limit")
+        baseline = _validated_baseline(json.loads(baseline_path.read_bytes()))
+    except (OSError, json.JSONDecodeError, ValueError) as error:
+        reason = str(error) if isinstance(error, ValueError) else "cannot read baseline JSON"
+        return _ci_failure(args, ExitCode.BASELINE_ERROR, "invalid_baseline", reason)
     # CI owns artifact persistence so export failures are distinguishable from invocation errors.
     args.output = None
     args.format = "json"
-    _scan(args)
+    scan_code = _scan(args)
+    if scan_code == ExitCode.INVOCATION_ERROR and hasattr(args, "_scan_error"):
+        detail = args._scan_error
+        return _ci_failure(
+            args, ExitCode.INVOCATION_ERROR, detail["error_code"], detail["reason"],
+            unavailable_scanners=detail["unavailable_scanners"],
+            valid_scanners=detail["valid_scanners"],
+        )
+    if scan_code == ExitCode.RUN_CONFLICT:
+        return _ci_failure(
+            args, ExitCode.RUN_CONFLICT, "run_conflict",
+            "immutable run ID already has different target content",
+        )
+    if scan_code == ExitCode.INVOCATION_ERROR:
+        return scan_code
     database_path = Path(args.db or os.environ.get("QRYPTON_DB", "qrypton.sqlite3"))
     store = SqliteRunStore(database_path)
-    runs = store.list_runs(tenant_id=args.tenant_id)
-    if not runs:
-        return ExitCode.SCANNER_FAILURE
-    result = store.get_run(tenant_id=args.tenant_id, run_id=runs[0][1])
+    result = store.get_run(tenant_id=args.tenant_id, run_id=args._run_id)
     if result is None:
+        store.close()
         return ExitCode.SCANNER_FAILURE
 
     # Determine exit code before building the result document.
@@ -291,7 +483,9 @@ def _ci_scan(args: argparse.Namespace) -> int:
         if cbom is not None:
             Path(args.cbom_output).write_bytes(cbom)
     except OSError:
+        store.close()
         return ExitCode.ARTIFACT_ERROR
+    store.close()
     return exit_code
 
 
