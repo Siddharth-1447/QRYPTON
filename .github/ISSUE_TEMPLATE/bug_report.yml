@@ -1,0 +1,32 @@
+name: Bug report
+description: Report reproducible behavior in QRYPTON.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: "For security vulnerabilities, follow SECURITY.md. Keep credentials, private code, and scan databases out of issues."
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Include your Python and Node.js versions where relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Use a minimal, sanitized example.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs
+      render: text

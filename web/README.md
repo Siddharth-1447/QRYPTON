@@ -14,7 +14,7 @@ npm run dev -- --hostname 127.0.0.1
 ```
 
 Open [the dashboard](http://localhost:3000/). Start the FastAPI backend on
-`127.0.0.1:8000` using the [root setup guide](../README.md#run-the-dashboards).
+`127.0.0.1:8000` using the [root setup guide](../docs/getting-started.md#run-the-dashboards).
 Configure matching `QRYPTON_DB`, `QRYPTON_TENANT_ID`, and `QRYPTON_ID_SECRET`
 in the backend terminal so scans and historical views share a workspace.
 
@@ -60,6 +60,8 @@ and build; these commands do not require real GitHub or OAuth credentials.
 | `public/` | Static assets and local fonts. |
 | `package-lock.json` | Reproducible npm dependency versions. |
 
-[`AGENTS.md`](AGENTS.md) records frontend conventions. Backend capabilities,
-scanner limitations, role provisioning, and architectural documentation are in
-the [root README](../README.md).
+Backend setup, scanner limitations, role provisioning, and architecture are in
+the [documentation index](../docs/README.md). Browser probe scripts ending in
+`-browser.cjs` are manual, environment-specific checks: some require Playwright,
+Microsoft Edge, and a separately running local API and dashboard. They are not
+installed or run by `npm test`.

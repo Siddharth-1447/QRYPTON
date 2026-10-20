@@ -1,4 +1,4 @@
-﻿__pycache__/
+__pycache__/
 *.py[cod]
 *.class
 .venv/
@@ -52,3 +52,25 @@ node_modules/
 /tmp/
 /backend-diagnostic-audit-2026-10-06.md
 
+
+# Personal assistant skills, editor state, and generated instructions
+.agents/
+.codex/
+.cursor/
+.kiro/
+.vscode/
+.idea/
+AGENTS.md
+CLAUDE.md
+
+# Private key stores and local OS files
+*.p12
+*.pfx
+*.jks
+*.keystore
+Thumbs.db
+Desktop.ini
+
+# Generated architecture validation and machine audit indexes
+docs/architecture.visual-check.*
+docs/backend-audit-index.json

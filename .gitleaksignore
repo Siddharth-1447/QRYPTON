@@ -1,0 +1,5 @@
+# Verified false positives: API method names DescribeKey/GetCryptoKey in historical audit prose.
+# Exact fingerprints retain secret detection for all other lines and commits.
+438d8139f8b7400337bb496a2d41968e30b22235:backend-diagnostic-audit-2026-10-06.md:generic-api-key:280
+438d8139f8b7400337bb496a2d41968e30b22235:docs/backend-diagnostic-audit-2026-10-06.md:generic-api-key:283
+9d3ba04ba80eb4345176e437c3ea7762f3d44682:docs/backend-diagnostic-audit-2026-10-06.md:generic-api-key:283
